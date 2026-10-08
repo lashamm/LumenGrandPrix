@@ -12,7 +12,7 @@ import { RACE_LENGTH } from '../game/config';
 import { RACE_MODE_META } from '../game/types';
 import { formatSol, formatTime } from './format';
 
-type Screen = 'setup' | 'customize' | 'garage' | 'wallet';
+type Screen = 'setup' | 'customize' | 'garage' | 'wallet' | 'settings';
 
 const MENU_ITEMS: ReadonlyArray<{ id: string; label: string; blurb: string; target: Screen }> = [
   {
@@ -38,6 +38,12 @@ const MENU_ITEMS: ReadonlyArray<{ id: string; label: string; blurb: string; targ
     label: 'WALLET / BALANCE',
     blurb: 'Connect Phantom and view your current balance.',
     target: 'wallet',
+  },
+  {
+    id: 'settings',
+    label: 'SETTINGS',
+    blurb: 'Theme, custom colours and the key legend.',
+    target: 'settings',
   },
 ];
 

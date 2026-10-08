@@ -18,6 +18,7 @@ import {
 } from '../racing/escrow';
 import type { PlayerProfile } from '../state/storage';
 import type { RaceSetup } from './RaceSetupScreen';
+import { useTheme } from '../theme/ThemeProvider';
 import { RaceControls } from './RaceControls';
 import { RaceResultPanel } from './ResultPanel';
 import { NetworkBadge } from './NetworkIndicator';
@@ -48,6 +49,7 @@ export function RaceScreen({
   onFinish: (result: RaceResult, settlement: Settlement | null) => void;
 }): ReactNode {
   const controls = useMemo(() => createControlState(), []);
+  const { palette } = useTheme();
   const [phase, setPhase] = useState<RacePhase>('countdown');
   const [result, setResult] = useState<RaceResult | null>(null);
   const [runId, setRunId] = useState(0);
@@ -117,13 +119,14 @@ export function RaceScreen({
       opponent,
       bestTime: session.bestTime,
       controls,
+      palette,
       onPhaseChange: setPhase,
       onComplete: (raceResult: RaceResult) => {
         setResult(raceResult);
         void settle(raceResult);
       },
     }),
-    [controls, opponent, session.bestTime, session.car, session.levels, settle],
+    [controls, opponent, palette, session.bestTime, session.car, session.levels, settle],
   );
 
   /**

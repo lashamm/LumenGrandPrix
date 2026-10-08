@@ -3,6 +3,7 @@ import { MainMenu } from './ui/MainMenu';
 import { CustomizeScreen, GarageScreen } from './ui/CustomizeScreen';
 import { RaceSetupScreen, type RaceSetup } from './ui/RaceSetupScreen';
 import { WalletPanel } from './ui/WalletPanel';
+import { SettingsScreen } from './ui/SettingsScreen';
 import { NetworkProvider, useNetwork } from './network/NetworkProvider';
 import { NetworkBadge, NetworkDialog } from './ui/NetworkIndicator';
 import { loadProfile, saveProfile, type PlayerProfile } from './state/storage';
@@ -29,7 +30,7 @@ const RaceScreen = lazy(() => import('./ui/RaceScreen').then((m) => ({ default: 
  * gets a full page. The selected network lives in the profile and is published
  * through `NetworkProvider`, so every screen reads the same single source.
  */
-type Screen = 'menu' | 'setup' | 'customize' | 'garage' | 'wallet' | 'race';
+type Screen = 'menu' | 'setup' | 'customize' | 'garage' | 'wallet' | 'settings' | 'race';
 
 export function App() {
   const [screen, setScreen] = useState<Screen>('menu');
@@ -182,6 +183,9 @@ function AppBody({
           )}
         </div>
       );
+
+    case 'settings':
+      return <SettingsScreen onBack={() => setScreen('menu')} />;
 
     case 'race':
       if (!setup) return <div className="screen screen--loading">NO RACE SELECTED</div>;

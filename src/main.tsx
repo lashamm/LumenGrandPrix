@@ -3,7 +3,20 @@ import { Analytics } from '@vercel/analytics/react';
 import { SpeedInsights } from '@vercel/speed-insights/react';
 import { App } from './App';
 import { SolanaProvider } from './solana/SolanaProvider';
+import { ThemeProvider } from './theme/ThemeProvider';
+import { loadTheme } from './state/theme';
+import { applyTheme } from './theme/theme';
 import './styles.css';
+
+/**
+ * Paint the stored theme before React renders.
+ *
+ * `styles.css` has already been evaluated at this point (imports run in order),
+ * so without this call the first frame would show the default identity and then
+ * snap to the saved one as soon as the provider mounts. The custom properties
+ * are written as inline styles on <html>, which outrank `:root`.
+ */
+applyTheme(loadTheme());
 
 const container = document.getElementById('root');
 if (!container) {
@@ -32,9 +45,11 @@ if (!container) {
  * runtime, not baked into the HTML.
  */
 createRoot(container).render(
-  <SolanaProvider>
-    <App />
-    <Analytics />
-    <SpeedInsights />
-  </SolanaProvider>,
+  <ThemeProvider>
+    <SolanaProvider>
+      <App />
+      <Analytics />
+      <SpeedInsights />
+    </SolanaProvider>
+  </ThemeProvider>,
 );

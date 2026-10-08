@@ -60,6 +60,23 @@ export const TACH = {
   startDeg: -135,
 } as const;
 
+/**
+ * How the tachometer *draws* RPM, not how the engine turns.
+ *
+ * Display-only: nothing in the physics reads this table, so tuning the needle
+ * can never change a lap time. `timeConstant` is the e-folding time of a
+ * first-order follow — about a tenth of a second is a mechanical tachometer,
+ * and the snap threshold stops the needle shimmering once it is effectively
+ * on target.
+ */
+export const RPM_GAUGE = {
+  /** Seconds for the needle to cover ~63% of the remaining gap. */
+  timeConstant: 0.07,
+  /** Gaps at or below this snap instead of easing, so the value can settle. */
+  snapThresholdRpm: 6,
+} as const;
+
+
 export const PHYSICS = {
   /** Standard sea-level air density, kg/m^3. */
   rollingResistanceCoefficient: 0.014,

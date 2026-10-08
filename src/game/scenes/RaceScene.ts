@@ -26,6 +26,8 @@ import {
   SCENERY,
 } from '../pixelArt';
 import type { ControlState } from '../control';
+import { RpmDisplay } from '../rpmDisplay';
+import type { HudPalette } from '../../theme/theme';
 
 export type RacePhase = 'countdown' | 'staging' | 'racing' | 'finished';
 
@@ -35,6 +37,8 @@ export interface RaceSceneData {
   opponent: OpponentDescriptor;
   bestTime: number | null;
   controls: ControlState;
+  /** Active visual identity, so the canvas HUD matches the surrounding app. */
+  palette: HudPalette;
   onPhaseChange: (phase: RacePhase) => void;
   onComplete: (result: RaceResult) => void;
 }
@@ -63,12 +67,17 @@ const LAUNCH_BAND_SWEET: readonly [number, number] = [LAUNCH.optimalRpm - 400, L
 const LAUNCH_BAND_GOOD: readonly [number, number] = [LAUNCH.optimalRpm - 1100, LAUNCH.optimalRpm + 800];
 const SHIFT_BAND: readonly [number, number] = [OPTIMAL_SHIFT_RPM - 380, OPTIMAL_SHIFT_RPM + 380];
 
-const QUALITY_COLOUR: Record<ShiftQuality, number> = {
-  PERFECT: 0x37e0c8,
+/**
+ * Grades that carry their own identity colour.
+ *
+ * `PERFECT` and `BAD` deliberately have no entry: they are resolved from the
+ * active palette instead, so a shift verdict always matches the accent (and the
+ * danger) of the theme on screen.
+ */
+const QUALITY_COLOUR: Partial<Record<ShiftQuality, number>> = {
   GREAT: 0x7ee787,
   GOOD: 0xffd166,
   MISS: 0xff9f45,
-  BAD: 0xff5c5c,
 };
 
 const FONT = '"Courier New", Courier, monospace';
@@ -105,6 +114,13 @@ export class RaceScene extends Phaser.Scene {
   private bulbs: Phaser.GameObjects.Image[] = [];
 
   private needle!: Phaser.GameObjects.Rectangle;
+  private tachFill!: Phaser.GameObjects.Graphics;
+  /**
+   * What the gauge draws. The engine's real RPM (`this.player.rpm`) changes
+   * instantly on a gear change; this eases toward it so the needle sweeps
+   * instead of teleporting. Nothing in the simulation reads it.
+   */
+  private rpmDisplay = new RpmDisplay();
   private rpmText!: Phaser.GameObjects.Text;
   private gearText!: Phaser.GameObjects.Text;
   private speedText!: Phaser.GameObjects.Text;
@@ -133,6 +149,7 @@ export class RaceScene extends Phaser.Scene {
     this.raceTime = 0;
     this.elapsed = 0;
     this.reported = false;
+    this.rpmDisplay.snapTo(DRIVETRAIN.idleRpm);
     this.playerWheels = [];
     this.opponentWheels = [];
     this.scenery = [];
@@ -145,9 +162,9 @@ export class RaceScene extends Phaser.Scene {
     generateWheelTexture(this, 'wheel-player', this.raceData.playerCar);
     generateWheelTexture(this, 'wheel-opponent', this.opponent.car);
     generateLightTreeTexture(this);
-    generateBulbTexture(this, 'bulb-red', 0xff3b30);
-    generateBulbTexture(this, 'bulb-amber', 0xffb020);
-    generateBulbTexture(this, 'bulb-green', 0x37e0c8);
+    generateBulbTexture(this, 'bulb-red', this.raceData.palette.danger);
+    generateBulbTexture(this, 'bulb-amber', this.raceData.palette.warn);
+    generateBulbTexture(this, 'bulb-green', this.raceData.palette.accent);
 
     this.drawSky();
     this.drawStrip();
@@ -314,20 +331,32 @@ export class RaceScene extends Phaser.Scene {
     return (degrees * Math.PI) / 180;
   }
 
+  /** Palette integers to the `#rrggbb` string Phaser text wants. */
+  private static toCss(value: number): string {
+    return `#${value.toString(16).padStart(6, '0')}`;
+  }
+
   private buildHud(): void {
     const { centreX: cx, centreY: cy, radius: r } = TACH;
+    const palette = this.raceData.palette;
+    const css = RaceScene.toCss;
 
-    this.add.rectangle(0, VIEW.hudTop, VIEW.width, VIEW.height - VIEW.hudTop, 0x080a11).setOrigin(0, 0).setDepth(20);
-    this.add.rectangle(0, VIEW.hudTop, VIEW.width, 2, 0x1e2537).setOrigin(0, 0).setDepth(21);
+    this.add.rectangle(0, VIEW.hudTop, VIEW.width, VIEW.height - VIEW.hudTop, palette.background).setOrigin(0, 0).setDepth(20);
+    this.add.rectangle(0, VIEW.hudTop, VIEW.width, 2, palette.line).setOrigin(0, 0).setDepth(21);
 
     const face = this.add.graphics().setDepth(21);
-    face.fillStyle(0x0a0d15, 1);
+    face.fillStyle(palette.surfaceSunken, 1);
     face.fillCircle(cx, cy, r - 1);
-    face.lineStyle(2, 0x1e2536, 1);
+    face.lineStyle(2, palette.line, 1);
     face.strokeCircle(cx, cy, r);
 
+    // The filled arc is the third moving part of the gauge. It is redrawn from
+    // the same eased value as the needle and the number below, so all three
+    // sweep together rather than one of them snapping.
+    this.tachFill = this.add.graphics().setDepth(22);
+
     const arc = (from: number, to: number, colour: number, width: number, alpha: number) => {
-      const g = this.add.graphics().setDepth(22);
+      const g = this.add.graphics().setDepth(23);
       g.lineStyle(width, colour, alpha);
       g.beginPath();
       g.arc(
@@ -341,16 +370,16 @@ export class RaceScene extends Phaser.Scene {
       g.strokePath();
     };
 
-    arc(SHIFT_BAND[0], SHIFT_BAND[1], 0x37e0c8, 7, 0.55);
-    arc(REV_LIMIT_RPM, MAX_RPM, 0xff3b30, 7, 0.95);
+    arc(SHIFT_BAND[0], SHIFT_BAND[1], palette.accent, 7, 0.55);
+    arc(REV_LIMIT_RPM, MAX_RPM, palette.danger, 7, 0.95);
 
-    const ticks = this.add.graphics().setDepth(23);
+    const ticks = this.add.graphics().setDepth(24);
     for (let rpm = 0; rpm <= MAX_RPM; rpm += 500) {
       const angle = RaceScene.gaugeAngle(rpm / MAX_RPM);
       const major = rpm % 1000 === 0;
       const inner = r - (major ? 13 : 9);
       const outer = r - 3;
-      ticks.lineStyle(1, rpm >= REV_LIMIT_RPM ? 0xff5c5c : major ? 0x6d78a0 : 0x3a4259, 1);
+      ticks.lineStyle(1, rpm >= REV_LIMIT_RPM ? palette.danger : major ? palette.muted : palette.line, 1);
       ticks.beginPath();
       ticks.moveTo(cx + Math.cos(angle) * inner, cy + Math.sin(angle) * inner);
       ticks.lineTo(cx + Math.cos(angle) * outer, cy + Math.sin(angle) * outer);
@@ -358,56 +387,57 @@ export class RaceScene extends Phaser.Scene {
     }
 
     this.add
-      .text(cx, cy - r - 4, 'RPM x1000', { fontFamily: FONT, fontSize: '7px', color: '#5f6a8a' })
+      .text(cx, cy - r - 4, 'RPM x1000', { fontFamily: FONT, fontSize: '7px', color: css(palette.faint) })
       .setOrigin(0.5, 1)
       .setDepth(23);
 
     this.gearText = this.add
-      .text(cx, cy - 6, '1', { fontFamily: FONT, fontSize: '20px', color: '#e8ecf7' })
+      .text(cx, cy - 6, '1', { fontFamily: FONT, fontSize: '20px', color: css(palette.text) })
       .setOrigin(0.5, 0.5)
       .setDepth(25);
     this.rpmText = this.add
-      .text(cx, cy + 18, '0', { fontFamily: FONT, fontSize: '9px', color: '#9aa6c8' })
+      .text(cx, cy + 18, '0', { fontFamily: FONT, fontSize: '9px', color: css(palette.muted) })
       .setOrigin(0.5, 0.5)
       .setDepth(25);
     this.add
-      .text(cx, cy + 32, 'GEAR', { fontFamily: FONT, fontSize: '6px', color: '#3f4763' })
+      .text(cx, cy + 32, 'GEAR', { fontFamily: FONT, fontSize: '6px', color: css(palette.faint) })
       .setOrigin(0.5, 0.5)
       .setDepth(25);
 
     this.needle = this.add
-      .rectangle(cx, cy, 2, r - 10, 0xffffff)
+      .rectangle(cx, cy, 2, r - 10, palette.text)
       .setOrigin(0.5, 1)
       .setDepth(26)
       .setAngle(TACH.startDeg);
-    this.add.circle(cx, cy, 4, 0x0b0d14).setDepth(27);
-    this.add.circle(cx, cy, 2, 0x37e0c8).setDepth(27);
+    this.add.circle(cx, cy, 4, palette.surface).setDepth(27);
+    this.add.circle(cx, cy, 2, palette.accent).setDepth(27);
 
-    // Progress rails.
+    // Progress rails. The player's rail carries the accent so the theme reads
+    // through even while the track art stays untouched.
     this.add
-      .rectangle(VIEW.progressX, VIEW.hudTop + 8, VIEW.progressWidth, 5, 0x161b28)
+      .rectangle(VIEW.progressX, VIEW.hudTop + 8, VIEW.progressWidth, 5, palette.line)
       .setOrigin(0, 0)
       .setDepth(21);
     this.opponentProgress = this.add
-      .rectangle(VIEW.progressX, VIEW.hudTop + 8, 0, 5, SCENERY.aiAccent)
+      .rectangle(VIEW.progressX, VIEW.hudTop + 8, 0, 5, palette.ai)
       .setOrigin(0, 0)
       .setDepth(22);
     this.playerProgress = this.add
-      .rectangle(VIEW.progressX, VIEW.hudTop + 15, 0, 5, SCENERY.finishGlow)
+      .rectangle(VIEW.progressX, VIEW.hudTop + 15, 0, 5, palette.accent)
       .setOrigin(0, 0)
       .setDepth(22);
 
     const rightX = VIEW.progressX;
     this.add
-      .text(rightX, VIEW.hudTop + 30, 'SPEED', { fontFamily: FONT, fontSize: '8px', color: '#7d88ab' })
+      .text(rightX, VIEW.hudTop + 30, 'SPEED', { fontFamily: FONT, fontSize: '8px', color: css(palette.faint) })
       .setOrigin(0, 0)
       .setDepth(22);
     this.speedText = this.add
-      .text(rightX, VIEW.hudTop + 38, '0', { fontFamily: FONT, fontSize: '30px', color: '#e8ecf7' })
+      .text(rightX, VIEW.hudTop + 38, '0', { fontFamily: FONT, fontSize: '30px', color: css(palette.text) })
       .setOrigin(0, 0)
       .setDepth(22);
     this.add
-      .text(rightX + 4, VIEW.hudTop + 74, 'KM/H', { fontFamily: FONT, fontSize: '8px', color: '#5f6a8a' })
+      .text(rightX + 4, VIEW.hudTop + 74, 'KM/H', { fontFamily: FONT, fontSize: '8px', color: css(palette.faint) })
       .setOrigin(0, 0)
       .setDepth(22);
 
@@ -415,21 +445,21 @@ export class RaceScene extends Phaser.Scene {
       .text(VIEW.width - 14, VIEW.hudTop + 30, 'TIME', {
         fontFamily: FONT,
         fontSize: '8px',
-        color: '#7d88ab',
+        color: css(palette.faint),
       })
       .setOrigin(1, 0)
       .setDepth(22);
     this.timeText = this.add
-      .text(VIEW.width - 14, VIEW.hudTop + 38, '0.00', { fontFamily: FONT, fontSize: '24px', color: '#e8ecf7' })
+      .text(VIEW.width - 14, VIEW.hudTop + 38, '0.00', { fontFamily: FONT, fontSize: '24px', color: css(palette.text) })
       .setOrigin(1, 0)
       .setDepth(22);
     this.splitText = this.add
-      .text(VIEW.width - 14, VIEW.hudTop + 70, '', { fontFamily: FONT, fontSize: '9px', color: '#5f6a8a' })
+      .text(VIEW.width - 14, VIEW.hudTop + 70, '', { fontFamily: FONT, fontSize: '9px', color: css(palette.faint) })
       .setOrigin(1, 0)
       .setDepth(22);
 
     this.leadText = this.add
-      .text(VIEW.width - 14, VIEW.hudTop + 84, '', { fontFamily: FONT, fontSize: '9px', color: '#9aa6c8' })
+      .text(VIEW.width - 14, VIEW.hudTop + 84, '', { fontFamily: FONT, fontSize: '9px', color: css(palette.muted) })
       .setOrigin(1, 0)
       .setDepth(22);
 
@@ -437,7 +467,7 @@ export class RaceScene extends Phaser.Scene {
       .text(VIEW.progressX + VIEW.progressWidth / 2, VIEW.hudTop + 58, '', {
         fontFamily: FONT,
         fontSize: '20px',
-        color: '#ffffff',
+        color: css(palette.text),
       })
       .setOrigin(0.5, 0.5)
       .setDepth(27)
@@ -447,7 +477,7 @@ export class RaceScene extends Phaser.Scene {
       .text(VIEW.progressX + VIEW.progressWidth / 2, VIEW.hudTop + 84, '', {
         fontFamily: FONT,
         fontSize: '9px',
-        color: '#9aa6c8',
+        color: css(palette.muted),
       })
       .setOrigin(0.5, 0.5)
       .setDepth(27);
@@ -458,7 +488,7 @@ export class RaceScene extends Phaser.Scene {
       .text(VIEW.width / 2, VIEW.hudTop / 2 + 6, '', {
         fontFamily: FONT,
         fontSize: '52px',
-        color: '#e8ecf7',
+        color: RaceScene.toCss(this.raceData.palette.text),
       })
       .setOrigin(0.5, 0.5)
       .setDepth(40);
@@ -467,21 +497,23 @@ export class RaceScene extends Phaser.Scene {
   private buildStagingOverlay(): void {
     const { stageBarX: x, stageBarWidth: width, stageBarY: barY } = VIEW;
     const height = 20;
+    const palette = this.raceData.palette;
+    const css = RaceScene.toCss;
 
     this.stagingGroup = this.add.container(0, 0).setDepth(30).setVisible(false);
     this.stagingGroup.add(
-      this.add.rectangle(124, VIEW.hudTop + 2, VIEW.width - 126, VIEW.height - VIEW.hudTop - 4, 0x080a11).setOrigin(0, 0).setAlpha(0.94),
+      this.add.rectangle(124, VIEW.hudTop + 2, VIEW.width - 126, VIEW.height - VIEW.hudTop - 4, palette.background).setOrigin(0, 0).setAlpha(0.94),
     );
     this.stagingGroup.add(
       this.add
         .text(136, VIEW.hudTop + 14, 'STAGE — HOLD GAS TO REV, RELEASE TO LAUNCH', {
           fontFamily: FONT,
           fontSize: '11px',
-          color: '#e8ecf7',
+          color: css(palette.text),
         })
         .setOrigin(0, 0),
     );
-    this.stagingGroup.add(this.add.rectangle(x, barY, width, height, 0x161b28).setOrigin(0, 0));
+    this.stagingGroup.add(this.add.rectangle(x, barY, width, height, palette.line).setOrigin(0, 0));
     this.stagingGroup.add(
       this.add
         .rectangle(
@@ -489,7 +521,7 @@ export class RaceScene extends Phaser.Scene {
           barY,
           ((LAUNCH_BAND_GOOD[1] - LAUNCH_BAND_GOOD[0]) / MAX_RPM) * width,
           height,
-          0x24405c,
+          palette.accentDim,
         )
         .setOrigin(0, 0),
     );
@@ -500,19 +532,19 @@ export class RaceScene extends Phaser.Scene {
           barY,
           ((LAUNCH_BAND_SWEET[1] - LAUNCH_BAND_SWEET[0]) / MAX_RPM) * width,
           height,
-          0x37e0c8,
+          palette.accent,
         )
         .setOrigin(0, 0)
         .setAlpha(0.55),
     );
-    this.stagingBarFill = this.add.rectangle(x, barY, 0, height, 0x2f8f7d).setOrigin(0, 0);
+    this.stagingBarFill = this.add.rectangle(x, barY, 0, height, palette.accentDim).setOrigin(0, 0);
     this.stagingGroup.add(this.stagingBarFill);
     this.stagingGroup.add(
       this.add
         .text(x, barY + height + 8, `AIM FOR ${LAUNCH.optimalRpm} RPM`, {
           fontFamily: FONT,
           fontSize: '10px',
-          color: '#37e0c8',
+          color: css(palette.accent),
         })
         .setOrigin(0, 0),
     );
@@ -521,7 +553,7 @@ export class RaceScene extends Phaser.Scene {
         .text(x, barY + height + 22, 'TOO LOW AND YOU BOG — TOO HIGH AND YOU HIT THE LIMITER', {
           fontFamily: FONT,
           fontSize: '8px',
-          color: '#5f6a8a',
+          color: css(palette.faint),
         })
         .setOrigin(0, 0),
     );
@@ -554,7 +586,11 @@ export class RaceScene extends Phaser.Scene {
     if (index < COUNTDOWN_STEPS.length) {
       const label = COUNTDOWN_STEPS[index];
       this.countdownText.setText(label);
-      this.countdownText.setColor(index === 0 ? '#ffb020' : '#e8ecf7');
+      this.countdownText.setColor(
+        index === 0
+          ? RaceScene.toCss(this.raceData.palette.warn)
+          : RaceScene.toCss(this.raceData.palette.text),
+      );
       this.countdownText.setScale(1.15 - (this.countdownT % COUNTDOWN_STEP_S) * 0.3);
       // Green stays dark until the player actually launches.
       this.setBulbs(Math.min(index + 1, 2));
@@ -563,7 +599,7 @@ export class RaceScene extends Phaser.Scene {
 
     if (this.countdownT >= COUNTDOWN_STEPS.length * COUNTDOWN_STEP_S) {
       this.countdownText.setText('STAGE');
-      this.countdownText.setColor('#37e0c8');
+      this.countdownText.setColor(RaceScene.toCss(this.raceData.palette.accent));
       this.setBulbs(2);
       this.phase = 'staging';
       this.stagingGroup.setVisible(true);
@@ -596,7 +632,7 @@ export class RaceScene extends Phaser.Scene {
     this.stagingGroup.setVisible(false);
     this.countdownText.setText('').setVisible(false);
     this.bulbs.forEach((bulb) => bulb.clearTint());
-    this.flashBanner(`${playerLaunch.quality} LAUNCH`, QUALITY_COLOUR[playerLaunch.quality]);
+    this.flashBanner(`${playerLaunch.quality} LAUNCH`, this.qualityColour(playerLaunch.quality));
     this.hintText.setText(`UPSHIFT AT ${(OPTIMAL_SHIFT_RPM / 1000).toFixed(0)}K`);
     this.raceData.onPhaseChange('racing');
   }
@@ -640,7 +676,14 @@ export class RaceScene extends Phaser.Scene {
     if (!this.player.gearChanged) return;
     const shift = this.player.lastShift;
     if (!shift) return;
-    this.flashBanner(shift.quality, QUALITY_COLOUR[shift.quality]);
+    this.flashBanner(shift.quality, this.qualityColour(shift.quality));
+  }
+
+  /** Resolves a shift verdict to a colour, following the theme where it should. */
+  private qualityColour(quality: ShiftQuality): number {
+    if (quality === 'PERFECT') return this.raceData.palette.accent;
+    if (quality === 'BAD') return this.raceData.palette.danger;
+    return QUALITY_COLOUR[quality] ?? this.raceData.palette.muted;
   }
 
   private report(): void {
@@ -724,12 +767,35 @@ export class RaceScene extends Phaser.Scene {
   }
 
   private renderHud(): void {
-    const rpm = this.phase === 'staging' || this.phase === 'countdown' ? this.stagingRevs : this.player.rpm;
+    const palette = this.raceData.palette;
+    const css = RaceScene.toCss;
+
+    /*
+     * The gauge renders an eased copy of the engine's RPM.
+     *
+     * `this.player.rpm` is the truth: it changes the instant the gear changes,
+     * which is what the physics uses and why the race is never slowed. Aiming
+     * the display at it every frame means an upshift reads as a sweep down, a
+     * downshift as a sweep up, and a rapid E→E→E simply re-aims mid-flight —
+     * there is no queued tween that could finish out of order.
+     *
+     * The needle, the number and the filled arc all read this one value, so
+     * they move together.
+     */
+    const targetRpm =
+      this.phase === 'staging' || this.phase === 'countdown' ? this.stagingRevs : this.player.rpm;
+    this.rpmDisplay.setTarget(targetRpm);
+    this.rpmDisplay.update(this.frameDt);
+    const rpm = this.rpmDisplay.rpm;
+
     const inSweetSpot = rpm >= SHIFT_BAND[0] && rpm <= SHIFT_BAND[1];
+    const onLimiter = rpm >= REV_LIMIT_RPM;
 
     this.needle.setAngle(TACH.startDeg + (rpm / MAX_RPM) * TACH.sweepDeg);
-    this.needle.fillColor = this.player.redlined ? 0xff3b30 : inSweetSpot ? 0x37e0c8 : 0xffffff;
+    this.needle.fillColor = onLimiter ? palette.danger : inSweetSpot ? palette.accent : palette.text;
     this.rpmText.setText(Math.round(rpm).toLocaleString('en-US'));
+    this.drawTachFill(rpm, onLimiter, inSweetSpot);
+    // The gear readout is intentionally NOT eased: the shift itself is instant.
     this.gearText.setText(this.phase === 'racing' ? String(this.player.gear + 1) : '1');
     this.speedText.setText(String(Math.round(this.phase === 'racing' ? this.player.speedKph : 0)));
     this.timeText.setText((this.phase === 'racing' ? this.raceTime : 0).toFixed(2));
@@ -743,7 +809,7 @@ export class RaceScene extends Phaser.Scene {
       this.leadText.setText(
         gap >= 0 ? `TRAILING ${gap.toFixed(1)} M` : `LEADING ${Math.abs(gap).toFixed(1)} M`,
       );
-      this.leadText.setColor(gap >= 0 ? '#ff7a5c' : '#37e0c8');
+      this.leadText.setColor(gap >= 0 ? css(palette.ai) : css(palette.accent));
       this.splitText.setText(
         this.raceData.bestTime ? `BEST ${this.raceData.bestTime.toFixed(2)}s` : 'NO TIME ON RECORD',
       );
@@ -753,11 +819,36 @@ export class RaceScene extends Phaser.Scene {
     }
 
     if (this.phase === 'staging') {
-      const inLaunchSweet = this.stagingRevs >= LAUNCH_BAND_SWEET[0] && this.stagingRevs <= LAUNCH_BAND_SWEET[1];
-      const inLaunchGood = this.stagingRevs >= LAUNCH_BAND_GOOD[0] && this.stagingRevs <= LAUNCH_BAND_GOOD[1];
-      this.stagingBarFill.width = (this.stagingRevs / MAX_RPM) * VIEW.stageBarWidth;
-      this.stagingBarFill.fillColor = inLaunchSweet ? 0x37e0c8 : inLaunchGood ? 0x2f8f7d : 0xff9f45;
+      const inLaunchSweet = rpm >= LAUNCH_BAND_SWEET[0] && rpm <= LAUNCH_BAND_SWEET[1];
+      const inLaunchGood = rpm >= LAUNCH_BAND_GOOD[0] && rpm <= LAUNCH_BAND_GOOD[1];
+      this.stagingBarFill.width = (rpm / MAX_RPM) * VIEW.stageBarWidth;
+      this.stagingBarFill.fillColor = inLaunchSweet ? palette.accent : inLaunchGood ? palette.accentDim : palette.warn;
     }
+  }
+
+  /**
+   * Redraws the tach's sweeping arc from the same eased RPM as the needle.
+   *
+   * It rides its own ring inside the tick marks rather than sharing the radius
+   * of the printed shift band, so the live arc stays distinguishable from the
+   * band it is sweeping into.
+   */
+  private drawTachFill(rpm: number, onLimiter: boolean, inSweetSpot: boolean): void {
+    const palette = this.raceData.palette;
+    const graphic = this.tachFill;
+    graphic.clear();
+    if (rpm <= 0) return;
+    graphic.lineStyle(4, onLimiter ? palette.danger : inSweetSpot ? palette.accent : palette.accentDim, 0.95);
+    graphic.beginPath();
+    graphic.arc(
+      TACH.centreX,
+      TACH.centreY,
+      TACH.radius - 16,
+      RaceScene.gaugeAngle(0),
+      RaceScene.gaugeAngle(Math.min(MAX_RPM, rpm) / MAX_RPM),
+      false,
+    );
+    graphic.strokePath();
   }
 
   private flashBanner(message: string, colour: number): void {
