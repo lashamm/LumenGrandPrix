@@ -18,7 +18,7 @@ export function run(levels: UpgradeLevels, launchRpm: number, shiftRpm: number):
   car.beginRace(launchRpm);
   let t = 0;
   while (!car.finished && t < 60) {
-    const input: CarInput = { throttle: true, upshift: false, downshift: false };
+    const input: CarInput = { throttle: true, brake: false, upshift: false, downshift: false };
     if (car.gear < 5 && car.rpm >= shiftRpm && !car.shifting) input.upshift = true;
     car.setInput(input);
     car.update(DT);

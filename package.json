@@ -10,7 +10,8 @@
     "preview": "vite preview",
     "typecheck": "tsc -b",
     "sim": "tsx scripts/simulate.ts",
-    "sweep": "tsx scripts/sweep.ts"
+    "sweep": "tsx scripts/sweep.ts",
+    "car-art": "tsx scripts/verify-car-art.ts"
   },
   "dependencies": {
     "@solana/wallet-adapter-base": "^0.9.23",

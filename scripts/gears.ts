@@ -15,7 +15,7 @@ function breakdown(launchRpm: number, shiftRpm: number) {
   const perGear = new Map<number, { time: number; startDist: number; endDist: number; entryKph: number }>();
   let entryKph = 0;
   while (!car.finished && t < 60) {
-    const input: CarInput = { throttle: true, upshift: false, downshift: false };
+    const input: CarInput = { throttle: true, brake: false, upshift: false, downshift: false };
     if (car.gear < 5 && car.rpm >= shiftRpm && !car.shifting) input.upshift = true;
     const gear = car.gear;
     if (!perGear.has(gear)) {

@@ -2,6 +2,7 @@ import type { ReactNode } from 'react';
 import { WalletReadyState } from '@solana/wallet-adapter-base';
 import { CLUSTER, useDevnetBalance, useWallet } from '../solana/SolanaProvider';
 import { shortenAddress } from '../solana/phantom';
+import { useNetwork } from '../network/NetworkProvider';
 
 /**
  * Wallet / balance panel.
@@ -13,6 +14,7 @@ import { shortenAddress } from '../solana/phantom';
 export function WalletPanel({ compact = false }: { compact?: boolean }): ReactNode {
   const { adapter, connect, disconnect, connecting, connected, error } = useWallet();
   const balance = useDevnetBalance();
+  const { config } = useNetwork();
 
   const installed = adapter.readyState === WalletReadyState.Installed;
 
@@ -20,16 +22,14 @@ export function WalletPanel({ compact = false }: { compact?: boolean }): ReactNo
     <section className={`wallet${compact ? ' wallet--compact' : ''}`}>
       <header className="wallet__head">
         <h3 className="panel__title">WALLET</h3>
-        <span className="badge badge--devnet" title="This prototype only uses Solana Devnet">
-          {CLUSTER.toUpperCase()}
+        <span className="badge badge--devnet" title={config.notice}>
+          {config.badge}
         </span>
       </header>
 
       <div className="wallet__env">
         <span className="dot dot--warn" aria-hidden="true" />
-        <p>
-          Devnet sandbox. No real SOL, no transactions, no signing. Wallet connection only.
-        </p>
+        <p>{config.notice}</p>
       </div>
 
       {connected && balance.address ? (
@@ -39,7 +39,7 @@ export function WalletPanel({ compact = false }: { compact?: boolean }): ReactNo
             <dd className="mono">{shortenAddress(balance.address, 6, 6)}</dd>
           </div>
           <div>
-            <dt>DEVNET SOL</dt>
+            <dt>{config.currency}</dt>
             <dd className="mono">
               {balance.status === 'loading' && balance.sol === null
                 ? 'loading…'
@@ -49,7 +49,11 @@ export function WalletPanel({ compact = false }: { compact?: boolean }): ReactNo
             </dd>
           </div>
           <div>
-            <dt>CLUSTER</dt>
+            <dt>NETWORK</dt>
+            <dd className="mono">{config.label}</dd>
+          </div>
+          <div>
+            <dt>RPC CLUSTER</dt>
             <dd className="mono">{CLUSTER}</dd>
           </div>
         </dl>

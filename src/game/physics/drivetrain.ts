@@ -13,11 +13,13 @@ import {
 
 export interface CarInput {
   throttle: boolean;
+  /** Service brakes, applied as `stats.brakeForceN` while held. */
+  brake: boolean;
   upshift: boolean;
   downshift: boolean;
 }
 
-export const IDLE_INPUT: CarInput = { throttle: false, upshift: false, downshift: false };
+export const IDLE_INPUT: CarInput = { throttle: false, brake: false, upshift: false, downshift: false };
 
 export interface ShiftEvent {
   quality: ShiftQuality;
@@ -220,9 +222,12 @@ export class Drivetrain {
 
     // Off-throttle engine braking makes lifting off the gas visibly drop revs.
     const engineBrake = this.throttle ? 0 : Math.min(rollingDrag * 0.6 + this.stats.massKg * 0.4, resistForce + 400);
+    // Held service brakes. Zero while untouched, so an idle run is untouched by it.
+    const pedalBrake = this.input.brake ? this.stats.brakeForceN : 0;
     const rolloutBrake = this.finished ? this.stats.brakeForceN * 0.5 : 0;
 
-    const netForce = driveForce - resistForce - engineBrake - rolloutBrake;
+    const netForce = driveForce - resistForce - engineBrake - pedalBrake - rolloutBrake;
+    // `Math.max(0, ...)` keeps a held brake at a standstill from running backwards.
     this.speed = Math.max(0, this.speed + (netForce / this.stats.massKg) * dt);
     this.distance += this.speed * dt;
 

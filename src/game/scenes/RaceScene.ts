@@ -1,11 +1,24 @@
 import Phaser from 'phaser';
-import { DRIVETRAIN, LAUNCH, PHASER, RACE_DISTANCE_M, SCENE_KEYS } from '../config';
-import type { AiDifficulty, RaceResult, ShiftQuality, UpgradeLevels } from '../types';
+import {
+  DRIVETRAIN,
+  LAUNCH,
+  MAX_RPM,
+  OPTIMAL_SHIFT_RPM,
+  PHASER,
+  RACE_LENGTH,
+  REV_LIMIT_RPM,
+  SCENE_KEYS,
+  TACH,
+} from '../config';
+import type { RaceResult, ShiftQuality, UpgradeLevels } from '../types';
 import type { CarDefinition } from '../car/carData';
 import { deriveStats } from '../physics/carStats';
 import { Drivetrain } from '../physics/drivetrain';
-import { AiDriver } from '../ai/aiDriver';
+import { createOpponent, type OpponentDescriptor, type RaceOpponent } from '../opponents/RaceOpponent';
 import {
+  CAR_SCALE,
+  CAR_SPRITE,
+  CAR_WHEELS,
   generateBulbTexture,
   generateCarTexture,
   generateLightTreeTexture,
@@ -14,13 +27,12 @@ import {
 } from '../pixelArt';
 import type { ControlState } from '../control';
 
-export type RacePhase = 'staging' | 'racing' | 'finished';
+export type RacePhase = 'countdown' | 'staging' | 'racing' | 'finished';
 
 export interface RaceSceneData {
   playerLevels: UpgradeLevels;
   playerCar: CarDefinition;
-  aiCar: CarDefinition;
-  difficulty: AiDifficulty;
+  opponent: OpponentDescriptor;
   bestTime: number | null;
   controls: ControlState;
   onPhaseChange: (phase: RacePhase) => void;
@@ -36,20 +48,20 @@ const VIEW = {
   playerX: 150,
   /** Screen pixels the strip scrolls per metre travelled. */
   pxPerMetre: 12,
-  /** Screen pixels per metre of lead over the AI (exaggerated for readability). */
+  /** Screen pixels per metre of lead over the opponent (exaggerated for readability). */
   pxPerMetreLead: 2.4,
   hudTop: 172,
-  rpmBarX: 26,
-  rpmBarWidth: 250,
-  rpmBarY: 44,
-  rpmBarHeight: 18,
-  stageBarX: 96,
-  stageBarWidth: 288,
-  stageBarHeight: 20,
+  /** Progress rails sit in the top strip of the HUD, right of the tachometer. */
+  progressX: 134,
+  progressWidth: 328,
+  stageBarX: 176,
+  stageBarWidth: 268,
+  stageBarY: 236,
 } as const;
 
 const LAUNCH_BAND_SWEET: readonly [number, number] = [LAUNCH.optimalRpm - 400, LAUNCH.optimalRpm + 400];
 const LAUNCH_BAND_GOOD: readonly [number, number] = [LAUNCH.optimalRpm - 1100, LAUNCH.optimalRpm + 800];
+const SHIFT_BAND: readonly [number, number] = [OPTIMAL_SHIFT_RPM - 380, OPTIMAL_SHIFT_RPM + 380];
 
 const QUALITY_COLOUR: Record<ShiftQuality, number> = {
   PERFECT: 0x37e0c8,
@@ -61,6 +73,8 @@ const QUALITY_COLOUR: Record<ShiftQuality, number> = {
 
 const FONT = '"Courier New", Courier, monospace';
 const SHIFT_MESSAGE_TTL = 1100;
+const COUNTDOWN_STEP_S = 0.8;
+const COUNTDOWN_STEPS = ['3', '2', '1'];
 
 interface SceneryObject {
   object: Phaser.GameObjects.GameObject & { x: number; setVisible(v: boolean): unknown };
@@ -71,33 +85,36 @@ export class RaceScene extends Phaser.Scene {
   /** Race payload handed over by the React shell via `game.scene.add`. */
   private raceData!: RaceSceneData;
   private player!: Drivetrain;
-  private ai!: AiDriver;
+  private opponent!: RaceOpponent;
 
-  private phase: RacePhase = 'staging';
+  private phase: RacePhase = 'countdown';
+  private countdownT = 0;
+  private countdownText!: Phaser.GameObjects.Text;
   private stagingRevs: number = DRIVETRAIN.idleRpm;
-  private aiStagingRevs: number = DRIVETRAIN.idleRpm;
+  private opponentStagingRevs: number = DRIVETRAIN.idleRpm;
   private raceTime = 0;
   private elapsed = 0;
   private frameDt = 1 / 60;
   private reported = false;
 
   private playerCar!: Phaser.GameObjects.Image;
-  private aiCar!: Phaser.GameObjects.Image;
+  private opponentCar!: Phaser.GameObjects.Image;
   private playerWheels: Phaser.GameObjects.Image[] = [];
-  private aiWheels: Phaser.GameObjects.Image[] = [];
+  private opponentWheels: Phaser.GameObjects.Image[] = [];
   private scenery: SceneryObject[] = [];
   private bulbs: Phaser.GameObjects.Image[] = [];
 
-  private rpmBarFill!: Phaser.GameObjects.Rectangle;
-  private rpmNeedle!: Phaser.GameObjects.Rectangle;
+  private needle!: Phaser.GameObjects.Rectangle;
   private rpmText!: Phaser.GameObjects.Text;
   private gearText!: Phaser.GameObjects.Text;
   private speedText!: Phaser.GameObjects.Text;
   private shiftBanner!: Phaser.GameObjects.Text;
   private hintText!: Phaser.GameObjects.Text;
   private timeText!: Phaser.GameObjects.Text;
+  private splitText!: Phaser.GameObjects.Text;
+  private leadText!: Phaser.GameObjects.Text;
   private playerProgress!: Phaser.GameObjects.Rectangle;
-  private aiProgress!: Phaser.GameObjects.Rectangle;
+  private opponentProgress!: Phaser.GameObjects.Rectangle;
   private stagingBarFill!: Phaser.GameObjects.Rectangle;
   private stagingGroup!: Phaser.GameObjects.Container;
 
@@ -108,27 +125,25 @@ export class RaceScene extends Phaser.Scene {
   init(data: RaceSceneData): void {
     this.raceData = data;
     this.player = new Drivetrain({ stats: deriveStats(data.playerLevels) });
-    this.ai = new AiDriver({
-      difficulty: data.difficulty,
-      levels: data.playerLevels,
-      seed: (Math.random() * 0xffffffff) >>> 0,
-    });
-    this.phase = 'staging';
+    this.opponent = createOpponent(data.opponent);
+    this.phase = 'countdown';
+    this.countdownT = 0;
     this.stagingRevs = DRIVETRAIN.idleRpm;
-    this.aiStagingRevs = DRIVETRAIN.idleRpm;
+    this.opponentStagingRevs = DRIVETRAIN.idleRpm;
     this.raceTime = 0;
     this.elapsed = 0;
     this.reported = false;
     this.playerWheels = [];
-    this.aiWheels = [];
+    this.opponentWheels = [];
     this.scenery = [];
     this.bulbs = [];
   }
 
   create(): void {
     generateCarTexture(this, 'car-player', this.raceData.playerCar);
-    generateCarTexture(this, 'car-ai', this.raceData.aiCar);
-    generateWheelTexture(this, 'wheel');
+    generateCarTexture(this, 'car-opponent', this.opponent.car);
+    generateWheelTexture(this, 'wheel-player', this.raceData.playerCar);
+    generateWheelTexture(this, 'wheel-opponent', this.opponent.car);
     generateLightTreeTexture(this);
     generateBulbTexture(this, 'bulb-red', 0xff3b30);
     generateBulbTexture(this, 'bulb-amber', 0xffb020);
@@ -139,8 +154,10 @@ export class RaceScene extends Phaser.Scene {
     this.buildScenery();
     this.buildCars();
     this.buildHud();
+    this.buildStagingOverlay();
+    this.buildCountdown();
 
-    this.raceData.onPhaseChange('staging');
+    this.raceData.onPhaseChange('countdown');
   }
 
   // ------------------------------------------------------------------ world --
@@ -183,38 +200,38 @@ export class RaceScene extends Phaser.Scene {
     this.add.rectangle(0, VIEW.playerLaneY - 26, VIEW.width, 28, SCENERY.playerLane).setOrigin(0, 0).setDepth(3);
     this.add.rectangle(0, VIEW.playerLaneY + 2, VIEW.width, 3, SCENERY.centreLine).setOrigin(0, 0).setDepth(4);
 
-    for (let metres = 0; metres <= RACE_DISTANCE_M; metres += 25) {
-      const x = metres * VIEW.pxPerMetre;
-      const isFinish = metres === RACE_DISTANCE_M;
+    for (let metres = 0; metres <= RACE_LENGTH; metres += 25) {
+      const worldX = metres * VIEW.pxPerMetre;
+      const isFinish = metres === RACE_LENGTH;
       this.track(
         this.add
-          .rectangle(x, VIEW.playerLaneY - 12, 2, 38, isFinish ? SCENERY.finishGlow : 0x39415e)
+          .rectangle(0, VIEW.playerLaneY - 12, 2, 38, isFinish ? SCENERY.finishGlow : 0x39415e)
           .setOrigin(0.5, 0.5)
           .setDepth(5),
-        x,
+        worldX,
       );
       if (!isFinish && metres % 50 === 0 && metres > 0) {
         const label = this.add
           .text(0, VIEW.playerLaneY - 24, `${metres}M`, { fontFamily: FONT, fontSize: '9px', color: '#7d88ab' })
           .setOrigin(0.5, 1)
           .setDepth(5);
-        this.track(label, x);
+        this.track(label, worldX);
       }
       if (isFinish) {
         const banner = this.add
-          .text(x, VIEW.playerLaneY - 52, 'FINISH', { fontFamily: FONT, fontSize: '12px', color: '#37e0c8' })
+          .text(0, VIEW.playerLaneY - 52, 'FINISH', { fontFamily: FONT, fontSize: '12px', color: '#37e0c8' })
           .setOrigin(0.5, 1)
           .setDepth(5);
-        this.track(banner, x);
+        this.track(banner, worldX);
         for (let row = 0; row < 4; row += 1) {
           for (let col = 0; col < 2; col += 1) {
             const even = (row + col) % 2 === 0;
             this.track(
               this.add
-                .rectangle(x + (col - 1) * 6, VIEW.playerLaneY - 32 + row * 6, 6, 6, even ? 0xf2f5ff : 0x0d0f18)
+                .rectangle((col - 1) * 6, VIEW.playerLaneY - 32 + row * 6, 6, 6, even ? 0xf2f5ff : 0x0d0f18)
                 .setOrigin(0.5, 0.5)
                 .setDepth(5),
-              x,
+              worldX,
             );
           }
         }
@@ -228,7 +245,7 @@ export class RaceScene extends Phaser.Scene {
       const height = 16 + ((i * 53) % 10);
       this.track(
         this.add
-          .rectangle(worldX, VIEW.horizon + height / 2 + 2, 92, height, i % 3 === 0 ? 0x1c2338 : 0x181e30)
+          .rectangle(0, VIEW.horizon + height / 2 + 2, 92, height, i % 3 === 0 ? 0x1c2338 : 0x181e30)
           .setOrigin(0.5, 0.5)
           .setDepth(3),
         worldX,
@@ -236,7 +253,7 @@ export class RaceScene extends Phaser.Scene {
       if (i % 3 === 0) {
         this.track(
           this.add
-            .text(worldX, VIEW.horizon + 5, 'LUMEN GP', { fontFamily: FONT, fontSize: '7px', color: '#4a5578' })
+            .text(0, VIEW.horizon + 5, 'LUMEN GP', { fontFamily: FONT, fontSize: '7px', color: '#4a5578' })
             .setOrigin(0.5, 0)
             .setDepth(4),
           worldX,
@@ -246,27 +263,40 @@ export class RaceScene extends Phaser.Scene {
   }
 
   private buildCars(): void {
+    const wheelDx = (CAR_WHEELS.rearX - CAR_SPRITE.width / 2) * CAR_SCALE;
+    const wheelFrontDx = (CAR_WHEELS.frontX - CAR_SPRITE.width / 2) * CAR_SCALE;
+    const wheelDy = (CAR_SPRITE.height - CAR_WHEELS.y) * CAR_SCALE;
+
     const makeCar = (
       texture: string,
+      wheelTexture: string,
       laneY: number,
     ): { car: Phaser.GameObjects.Image; wheels: Phaser.GameObjects.Image[] } => {
-      const car = this.add.image(VIEW.playerX, laneY, texture).setOrigin(0.5, 1).setScale(2).setDepth(10);
-      const wheels = [-20, 20].map((offset) =>
-        this.add.image(VIEW.playerX + offset, laneY - 9, 'wheel').setOrigin(0.5, 0.5).setScale(2).setDepth(11),
+      const car = this.add
+        .image(VIEW.playerX, laneY, texture)
+        .setOrigin(0.5, 1)
+        .setScale(CAR_SCALE)
+        .setDepth(10);
+      const wheels = [wheelDx, wheelFrontDx].map((offset) =>
+        this.add
+          .image(VIEW.playerX + offset, laneY - wheelDy, wheelTexture)
+          .setOrigin(0.5, 0.5)
+          .setScale(CAR_SCALE)
+          .setDepth(11),
       );
       return { car, wheels };
     };
 
-    const ai = makeCar('car-ai', VIEW.aiLaneY);
-    this.aiCar = ai.car;
-    this.aiWheels = ai.wheels;
-    this.aiCar.setAlpha(0.94);
+    const rival = makeCar('car-opponent', 'wheel-opponent', VIEW.aiLaneY);
+    this.opponentCar = rival.car;
+    this.opponentWheels = rival.wheels;
+    this.opponentCar.setAlpha(0.94);
 
-    const player = makeCar('car-player', VIEW.playerLaneY);
+    const player = makeCar('car-player', 'wheel-player', VIEW.playerLaneY);
     this.playerCar = player.car;
     this.playerWheels = player.wheels;
 
-    const treeX = 40 * VIEW.pxPerMetre;
+    const treeX = -70;
     this.add.image(treeX, VIEW.playerLaneY + 6, 'light-tree').setOrigin(0.5, 1).setDepth(9);
     ['bulb-red', 'bulb-amber', 'bulb-green'].forEach((key, index) => {
       const bulb = this.add.image(treeX, VIEW.playerLaneY - 46 + index * 15, key).setScale(2).setDepth(12);
@@ -278,141 +308,186 @@ export class RaceScene extends Phaser.Scene {
 
   // -------------------------------------------------------------------- HUD --
 
-  private rpmToX(rpm: number, x: number, width: number): number {
-    return x + (rpm / DRIVETRAIN.redlineRpm) * width;
-  }
-
-  private band(x: number, width: number, low: number, high: number, height: number, colour: number, depth: number) {
-    return this.add
-      .rectangle(
-        this.rpmToX(low, x, width),
-        VIEW.hudTop + VIEW.rpmBarY,
-        ((high - low) / DRIVETRAIN.redlineRpm) * width,
-        height,
-        colour,
-      )
-      .setOrigin(0, 0)
-      .setDepth(depth);
+  /** Angle in Phaser canvas radians for a fraction of the sweep (0..1). */
+  private static gaugeAngle(t: number): number {
+    const degrees = TACH.startDeg + t * TACH.sweepDeg - 90;
+    return (degrees * Math.PI) / 180;
   }
 
   private buildHud(): void {
-    const { rpmBarX: x, rpmBarWidth: width, rpmBarY: barYOffset, rpmBarHeight: height } = VIEW;
-    const barY = VIEW.hudTop + barYOffset;
+    const { centreX: cx, centreY: cy, radius: r } = TACH;
 
     this.add.rectangle(0, VIEW.hudTop, VIEW.width, VIEW.height - VIEW.hudTop, 0x080a11).setOrigin(0, 0).setDepth(20);
     this.add.rectangle(0, VIEW.hudTop, VIEW.width, 2, 0x1e2537).setOrigin(0, 0).setDepth(21);
 
-    const progressX = 18;
-    const progressWidth = VIEW.width - 36;
-    this.add.rectangle(progressX, VIEW.hudTop + 10, progressWidth, 5, 0x161b28).setOrigin(0, 0).setDepth(21);
-    this.aiProgress = this.add.rectangle(progressX, VIEW.hudTop + 10, 0, 5, SCENERY.aiAccent).setOrigin(0, 0).setDepth(22);
-    this.playerProgress = this.add
-      .rectangle(progressX, VIEW.hudTop + 17, 0, 5, SCENERY.finishGlow)
-      .setOrigin(0, 0)
-      .setDepth(22);
+    const face = this.add.graphics().setDepth(21);
+    face.fillStyle(0x0a0d15, 1);
+    face.fillCircle(cx, cy, r - 1);
+    face.lineStyle(2, 0x1e2536, 1);
+    face.strokeCircle(cx, cy, r);
 
-    this.add.rectangle(x, barY, width, height, 0x161b28).setOrigin(0, 0).setDepth(21);
-    this.band(x, width, DRIVETRAIN.shiftUpRpm - 380, DRIVETRAIN.shiftUpRpm + 380, height, 0x24405c, 22);
-    this.band(x, width, DRIVETRAIN.shiftUpRpm - 60, DRIVETRAIN.shiftUpRpm + 60, height, 0x37e0c8, 23).setAlpha(0.45);
-    this.rpmBarFill = this.add.rectangle(x, barY, 0, height, 0x2f8f7d).setOrigin(0, 0).setDepth(24);
-    this.band(x, width, DRIVETRAIN.revLimitRpm, DRIVETRAIN.redlineRpm, height, 0xff3b30, 25).setAlpha(0.8);
-    this.rpmNeedle = this.add.rectangle(x, barY - 5, 2, height + 10, 0xffffff).setOrigin(0, 0).setDepth(26);
+    const arc = (from: number, to: number, colour: number, width: number, alpha: number) => {
+      const g = this.add.graphics().setDepth(22);
+      g.lineStyle(width, colour, alpha);
+      g.beginPath();
+      g.arc(
+        cx,
+        cy,
+        r - 6,
+        RaceScene.gaugeAngle(Math.max(0, from) / MAX_RPM),
+        RaceScene.gaugeAngle(Math.min(MAX_RPM, to) / MAX_RPM),
+        false,
+      );
+      g.strokePath();
+    };
 
-    for (let rpm = 0; rpm <= DRIVETRAIN.redlineRpm; rpm += 1000) {
-      const tickX = this.rpmToX(rpm, x, width);
-      this.add.rectangle(tickX, barY + height, 1, 4, 0x3a4259).setOrigin(0, 0).setDepth(22);
-      if (rpm > 0) {
-        this.add
-          .text(tickX, barY + height + 6, `${rpm / 1000}`, { fontFamily: FONT, fontSize: '8px', color: '#5f6a8a' })
-          .setOrigin(0.5, 0)
-          .setDepth(22);
-      }
+    arc(SHIFT_BAND[0], SHIFT_BAND[1], 0x37e0c8, 7, 0.55);
+    arc(REV_LIMIT_RPM, MAX_RPM, 0xff3b30, 7, 0.95);
+
+    const ticks = this.add.graphics().setDepth(23);
+    for (let rpm = 0; rpm <= MAX_RPM; rpm += 500) {
+      const angle = RaceScene.gaugeAngle(rpm / MAX_RPM);
+      const major = rpm % 1000 === 0;
+      const inner = r - (major ? 13 : 9);
+      const outer = r - 3;
+      ticks.lineStyle(1, rpm >= REV_LIMIT_RPM ? 0xff5c5c : major ? 0x6d78a0 : 0x3a4259, 1);
+      ticks.beginPath();
+      ticks.moveTo(cx + Math.cos(angle) * inner, cy + Math.sin(angle) * inner);
+      ticks.lineTo(cx + Math.cos(angle) * outer, cy + Math.sin(angle) * outer);
+      ticks.strokePath();
     }
+
     this.add
-      .text(this.rpmToX(DRIVETRAIN.shiftUpRpm, x, width), barY - 3, 'SHIFT HERE', {
-        fontFamily: FONT,
-        fontSize: '8px',
-        color: '#37e0c8',
-      })
+      .text(cx, cy - r - 4, 'RPM x1000', { fontFamily: FONT, fontSize: '7px', color: '#5f6a8a' })
       .setOrigin(0.5, 1)
-      .setDepth(22);
-    this.add
-      .text(x, barY - 3, 'RPM', { fontFamily: FONT, fontSize: '9px', color: '#7d88ab' })
-      .setOrigin(0, 1)
-      .setDepth(22);
+      .setDepth(23);
 
-    this.rpmText = this.add
-      .text(x + width + 12, barY, '0', { fontFamily: FONT, fontSize: '20px', color: '#e8ecf7' })
-      .setOrigin(0, 0)
-      .setDepth(26);
-    this.add
-      .text(x + width + 12, barY + 21, 'RPM', { fontFamily: FONT, fontSize: '8px', color: '#5f6a8a' })
-      .setOrigin(0, 0)
-      .setDepth(26);
-
-    this.add
-      .text(x, VIEW.hudTop + 72, 'GEAR', { fontFamily: FONT, fontSize: '9px', color: '#7d88ab' })
-      .setOrigin(0, 0)
-      .setDepth(22);
     this.gearText = this.add
-      .text(x, VIEW.hudTop + 82, '1', { fontFamily: FONT, fontSize: '26px', color: '#e8ecf7' })
+      .text(cx, cy - 6, '1', { fontFamily: FONT, fontSize: '20px', color: '#e8ecf7' })
+      .setOrigin(0.5, 0.5)
+      .setDepth(25);
+    this.rpmText = this.add
+      .text(cx, cy + 18, '0', { fontFamily: FONT, fontSize: '9px', color: '#9aa6c8' })
+      .setOrigin(0.5, 0.5)
+      .setDepth(25);
+    this.add
+      .text(cx, cy + 32, 'GEAR', { fontFamily: FONT, fontSize: '6px', color: '#3f4763' })
+      .setOrigin(0.5, 0.5)
+      .setDepth(25);
+
+    this.needle = this.add
+      .rectangle(cx, cy, 2, r - 10, 0xffffff)
+      .setOrigin(0.5, 1)
+      .setDepth(26)
+      .setAngle(TACH.startDeg);
+    this.add.circle(cx, cy, 4, 0x0b0d14).setDepth(27);
+    this.add.circle(cx, cy, 2, 0x37e0c8).setDepth(27);
+
+    // Progress rails.
+    this.add
+      .rectangle(VIEW.progressX, VIEW.hudTop + 8, VIEW.progressWidth, 5, 0x161b28)
+      .setOrigin(0, 0)
+      .setDepth(21);
+    this.opponentProgress = this.add
+      .rectangle(VIEW.progressX, VIEW.hudTop + 8, 0, 5, SCENERY.aiAccent)
       .setOrigin(0, 0)
       .setDepth(22);
-    this.add
-      .text(x + 26, VIEW.hudTop + 96, '/ 6', { fontFamily: FONT, fontSize: '10px', color: '#5f6a8a' })
+    this.playerProgress = this.add
+      .rectangle(VIEW.progressX, VIEW.hudTop + 15, 0, 5, SCENERY.finishGlow)
       .setOrigin(0, 0)
       .setDepth(22);
 
+    const rightX = VIEW.progressX;
     this.add
-      .text(x + 76, VIEW.hudTop + 72, 'KM/H', { fontFamily: FONT, fontSize: '9px', color: '#7d88ab' })
+      .text(rightX, VIEW.hudTop + 30, 'SPEED', { fontFamily: FONT, fontSize: '8px', color: '#7d88ab' })
       .setOrigin(0, 0)
       .setDepth(22);
     this.speedText = this.add
-      .text(x + 76, VIEW.hudTop + 82, '0', { fontFamily: FONT, fontSize: '26px', color: '#e8ecf7' })
+      .text(rightX, VIEW.hudTop + 38, '0', { fontFamily: FONT, fontSize: '30px', color: '#e8ecf7' })
+      .setOrigin(0, 0)
+      .setDepth(22);
+    this.add
+      .text(rightX + 4, VIEW.hudTop + 74, 'KM/H', { fontFamily: FONT, fontSize: '8px', color: '#5f6a8a' })
       .setOrigin(0, 0)
       .setDepth(22);
 
+    this.add
+      .text(VIEW.width - 14, VIEW.hudTop + 30, 'TIME', {
+        fontFamily: FONT,
+        fontSize: '8px',
+        color: '#7d88ab',
+      })
+      .setOrigin(1, 0)
+      .setDepth(22);
     this.timeText = this.add
-      .text(VIEW.width - 18, VIEW.hudTop + 26, '0.00s', { fontFamily: FONT, fontSize: '13px', color: '#e8ecf7' })
+      .text(VIEW.width - 14, VIEW.hudTop + 38, '0.00', { fontFamily: FONT, fontSize: '24px', color: '#e8ecf7' })
+      .setOrigin(1, 0)
+      .setDepth(22);
+    this.splitText = this.add
+      .text(VIEW.width - 14, VIEW.hudTop + 70, '', { fontFamily: FONT, fontSize: '9px', color: '#5f6a8a' })
+      .setOrigin(1, 0)
+      .setDepth(22);
+
+    this.leadText = this.add
+      .text(VIEW.width - 14, VIEW.hudTop + 84, '', { fontFamily: FONT, fontSize: '9px', color: '#9aa6c8' })
       .setOrigin(1, 0)
       .setDepth(22);
 
     this.shiftBanner = this.add
-      .text(VIEW.width / 2, VIEW.hudTop + 74, '', { fontFamily: FONT, fontSize: '20px', color: '#ffffff' })
-      .setOrigin(0.5, 0)
+      .text(VIEW.progressX + VIEW.progressWidth / 2, VIEW.hudTop + 58, '', {
+        fontFamily: FONT,
+        fontSize: '20px',
+        color: '#ffffff',
+      })
+      .setOrigin(0.5, 0.5)
       .setDepth(27)
       .setAlpha(0);
 
     this.hintText = this.add
-      .text(VIEW.width / 2, VIEW.hudTop + 26, '', { fontFamily: FONT, fontSize: '10px', color: '#9aa6c8' })
-      .setOrigin(0.5, 0)
+      .text(VIEW.progressX + VIEW.progressWidth / 2, VIEW.hudTop + 84, '', {
+        fontFamily: FONT,
+        fontSize: '9px',
+        color: '#9aa6c8',
+      })
+      .setOrigin(0.5, 0.5)
       .setDepth(27);
+  }
 
-    this.buildStagingOverlay();
+  private buildCountdown(): void {
+    this.countdownText = this.add
+      .text(VIEW.width / 2, VIEW.hudTop / 2 + 6, '', {
+        fontFamily: FONT,
+        fontSize: '52px',
+        color: '#e8ecf7',
+      })
+      .setOrigin(0.5, 0.5)
+      .setDepth(40);
   }
 
   private buildStagingOverlay(): void {
-    const { stageBarX: x, stageBarWidth: width, stageBarHeight: height } = VIEW;
-    const barY = VIEW.hudTop + 52;
+    const { stageBarX: x, stageBarWidth: width, stageBarY: barY } = VIEW;
+    const height = 20;
 
-    this.stagingGroup = this.add.container(0, 0).setDepth(30);
-    this.stagingGroup.add(this.add.rectangle(0, 0, VIEW.width, VIEW.height, 0x080a11).setOrigin(0, 0).setAlpha(0.97));
+    this.stagingGroup = this.add.container(0, 0).setDepth(30).setVisible(false);
+    this.stagingGroup.add(
+      this.add.rectangle(124, VIEW.hudTop + 2, VIEW.width - 126, VIEW.height - VIEW.hudTop - 4, 0x080a11).setOrigin(0, 0).setAlpha(0.94),
+    );
     this.stagingGroup.add(
       this.add
-        .text(VIEW.width / 2, VIEW.hudTop + 22, 'STAGE   HOLD GAS TO REV   RELEASE TO LAUNCH', {
+        .text(136, VIEW.hudTop + 14, 'STAGE — HOLD GAS TO REV, RELEASE TO LAUNCH', {
           fontFamily: FONT,
           fontSize: '11px',
           color: '#e8ecf7',
         })
-        .setOrigin(0.5, 0),
+        .setOrigin(0, 0),
     );
     this.stagingGroup.add(this.add.rectangle(x, barY, width, height, 0x161b28).setOrigin(0, 0));
     this.stagingGroup.add(
       this.add
         .rectangle(
-          this.rpmToX(LAUNCH_BAND_GOOD[0], x, width),
+          x + (LAUNCH_BAND_GOOD[0] / MAX_RPM) * width,
           barY,
-          ((LAUNCH_BAND_GOOD[1] - LAUNCH_BAND_GOOD[0]) / DRIVETRAIN.redlineRpm) * width,
+          ((LAUNCH_BAND_GOOD[1] - LAUNCH_BAND_GOOD[0]) / MAX_RPM) * width,
           height,
           0x24405c,
         )
@@ -421,9 +496,9 @@ export class RaceScene extends Phaser.Scene {
     this.stagingGroup.add(
       this.add
         .rectangle(
-          this.rpmToX(LAUNCH_BAND_SWEET[0], x, width),
+          x + (LAUNCH_BAND_SWEET[0] / MAX_RPM) * width,
           barY,
-          ((LAUNCH_BAND_SWEET[1] - LAUNCH_BAND_SWEET[0]) / DRIVETRAIN.redlineRpm) * width,
+          ((LAUNCH_BAND_SWEET[1] - LAUNCH_BAND_SWEET[0]) / MAX_RPM) * width,
           height,
           0x37e0c8,
         )
@@ -434,22 +509,21 @@ export class RaceScene extends Phaser.Scene {
     this.stagingGroup.add(this.stagingBarFill);
     this.stagingGroup.add(
       this.add
-        .text(VIEW.width / 2, barY + height + 8, `AIM FOR ${LAUNCH.optimalRpm} RPM`, {
+        .text(x, barY + height + 8, `AIM FOR ${LAUNCH.optimalRpm} RPM`, {
           fontFamily: FONT,
           fontSize: '10px',
           color: '#37e0c8',
         })
-        .setOrigin(0.5, 0),
+        .setOrigin(0, 0),
     );
     this.stagingGroup.add(
       this.add
-        .text(
-          VIEW.width / 2,
-          barY + height + 24,
-          'TOO LOW AND YOU BOG   TOO HIGH AND YOU HIT THE LIMITER',
-          { fontFamily: FONT, fontSize: '8px', color: '#5f6a8a' },
-        )
-        .setOrigin(0.5, 0),
+        .text(x, barY + height + 22, 'TOO LOW AND YOU BOG — TOO HIGH AND YOU HIT THE LIMITER', {
+          fontFamily: FONT,
+          fontSize: '8px',
+          color: '#5f6a8a',
+        })
+        .setOrigin(0, 0),
     );
   }
 
@@ -459,9 +533,11 @@ export class RaceScene extends Phaser.Scene {
     this.frameDt = Math.min(delta / 1000, 1 / 20);
     this.elapsed += this.frameDt;
 
-    if (this.phase === 'staging') {
+    if (this.phase === 'countdown') {
+      this.updateCountdown(this.frameDt);
+    } else if (this.phase === 'staging') {
       this.updateStaging(this.frameDt);
-    } else {
+    } else if (this.phase === 'racing') {
       this.updateRacing(this.frameDt);
     }
 
@@ -469,11 +545,44 @@ export class RaceScene extends Phaser.Scene {
     this.renderHud();
   }
 
+  private updateCountdown(dt: number): void {
+    this.countdownT += dt;
+    this.player.setInput({ throttle: false, brake: false, upshift: false, downshift: false });
+    this.stagingRevs = DRIVETRAIN.idleRpm;
+
+    const index = Math.floor(this.countdownT / COUNTDOWN_STEP_S);
+    if (index < COUNTDOWN_STEPS.length) {
+      const label = COUNTDOWN_STEPS[index];
+      this.countdownText.setText(label);
+      this.countdownText.setColor(index === 0 ? '#ffb020' : '#e8ecf7');
+      this.countdownText.setScale(1.15 - (this.countdownT % COUNTDOWN_STEP_S) * 0.3);
+      // Green stays dark until the player actually launches.
+      this.setBulbs(Math.min(index + 1, 2));
+      return;
+    }
+
+    if (this.countdownT >= COUNTDOWN_STEPS.length * COUNTDOWN_STEP_S) {
+      this.countdownText.setText('STAGE');
+      this.countdownText.setColor('#37e0c8');
+      this.setBulbs(2);
+      this.phase = 'staging';
+      this.stagingGroup.setVisible(true);
+      this.raceData.onPhaseChange('staging');
+    }
+  }
+
+  private setBulbs(lit: number): void {
+    this.bulbs.forEach((bulb, index) => {
+      if (index < lit) bulb.clearTint();
+      else bulb.setTint(0x252c40);
+    });
+  }
+
   private updateStaging(dt: number): void {
     const controls = this.raceData.controls;
-    this.player.setInput({ throttle: false, upshift: false, downshift: false });
+    this.player.setInput({ throttle: false, brake: false, upshift: false, downshift: false });
     this.stagingRevs = this.player.stagingRpm(this.stagingRevs, dt, controls.gas);
-    this.aiStagingRevs = this.ai.stagingRevs(dt, true, this.aiStagingRevs);
+    this.opponentStagingRevs = this.opponent.stagingRevs(dt, true, this.opponentStagingRevs);
 
     if (!controls.gas && this.stagingRevs > DRIVETRAIN.idleRpm + 20) {
       this.launch();
@@ -482,14 +591,13 @@ export class RaceScene extends Phaser.Scene {
 
   private launch(): void {
     const playerLaunch = this.player.beginRace(this.stagingRevs);
-    this.ai.car.beginRace(this.aiStagingRevs);
+    this.opponent.drivetrain.beginRace(this.opponentStagingRevs);
     this.phase = 'racing';
     this.stagingGroup.setVisible(false);
-    this.bulbs.forEach((bulb, index) => {
-      this.time.delayedCall(index * 90, () => bulb.clearTint());
-    });
+    this.countdownText.setText('').setVisible(false);
+    this.bulbs.forEach((bulb) => bulb.clearTint());
     this.flashBanner(`${playerLaunch.quality} LAUNCH`, QUALITY_COLOUR[playerLaunch.quality]);
-    this.hintText.setText('HOLD GAS   UPSHIFT AT 6K');
+    this.hintText.setText(`UPSHIFT AT ${(OPTIMAL_SHIFT_RPM / 1000).toFixed(0)}K`);
     this.raceData.onPhaseChange('racing');
   }
 
@@ -498,25 +606,29 @@ export class RaceScene extends Phaser.Scene {
 
     this.player.setInput({
       throttle: this.raceData.controls.gas,
+      brake: this.raceData.controls.brake,
       upshift: this.raceData.controls.upshift,
       downshift: this.raceData.controls.downshift,
     });
     this.player.update(dt);
     this.onPlayerShift();
 
-    const aiInput = this.player.finished ? { throttle: true, upshift: false, downshift: false } : this.ai.update(dt);
-    this.ai.car.setInput(aiInput);
-    this.ai.car.update(dt);
+    const opponentDrivetrain = this.opponent.drivetrain;
+    const opponentInput = this.player.finished
+      ? { throttle: true, brake: false, upshift: false, downshift: false }
+      : this.opponent.readInput(dt);
+    opponentDrivetrain.setInput(opponentInput);
+    opponentDrivetrain.update(dt);
 
-    if (!this.player.finished && this.player.distance >= RACE_DISTANCE_M) {
+    if (!this.player.finished && this.player.distance >= RACE_LENGTH) {
       this.player.markFinished(this.raceTime);
     }
-    if (!this.ai.car.finished && this.ai.car.distance >= RACE_DISTANCE_M) {
-      this.ai.car.markFinished(this.raceTime);
+    if (!opponentDrivetrain.finished && opponentDrivetrain.distance >= RACE_LENGTH) {
+      opponentDrivetrain.markFinished(this.raceTime);
     }
 
     const waitAfterPlayer = this.player.finished && this.raceTime - this.player.finishTime > 2.5;
-    const bothHome = this.player.finished && this.ai.car.finished;
+    const bothHome = this.player.finished && opponentDrivetrain.finished;
     if (bothHome || waitAfterPlayer || this.raceTime > 30) {
       this.phase = 'finished';
       this.raceData.onPhaseChange('finished');
@@ -535,18 +647,19 @@ export class RaceScene extends Phaser.Scene {
     if (this.reported) return;
     this.reported = true;
 
+    const opponentDrivetrain = this.opponent.drivetrain;
     const playerFinished = this.player.finished;
-    const aiFinished = this.ai.car.finished;
+    const opponentFinished = opponentDrivetrain.finished;
     const playerTime = playerFinished ? this.player.finishTime : Number.POSITIVE_INFINITY;
-    const aiTime = aiFinished ? this.ai.car.finishTime : Number.POSITIVE_INFINITY;
+    const opponentTime = opponentFinished ? opponentDrivetrain.finishTime : Number.POSITIVE_INFINITY;
     const history = this.player.shiftHistory;
 
     this.raceData.onComplete({
       playerTime,
-      aiTime,
+      aiTime: opponentTime,
       playerFinished,
-      aiFinished,
-      win: playerFinished && (!aiFinished || playerTime < aiTime),
+      aiFinished: opponentFinished,
+      win: playerFinished && (!opponentFinished || playerTime < opponentTime),
       launchRpm: Math.round(this.player.launch?.rpm ?? 0),
       launchQuality: this.player.launch?.quality ?? 'BAD',
       shiftCount: history.length,
@@ -559,20 +672,34 @@ export class RaceScene extends Phaser.Scene {
   // ----------------------------------------------------------------- render --
 
   private renderWorld(): void {
+    // World x starts at the finish line offset by the player's screen position,
+    // so `screen = worldX - scroll + playerX`.
     const scroll = this.player.distance * VIEW.pxPerMetre;
     for (const item of this.scenery) {
-      const x = item.worldX - scroll;
+      const x = item.worldX - scroll + VIEW.playerX;
       item.object.x = x;
       item.object.setVisible(x > -70 && x < VIEW.width + 70);
     }
 
-    const lead = this.ai.car.distance - this.player.distance;
-    this.aiCar.x = clamp(VIEW.playerX + lead * VIEW.pxPerMetreLead, 24, VIEW.width - 24);
-    this.aiCar.y = VIEW.aiLaneY + this.jitter(this.ai.car.redlined, 0.9, 0.25);
+    const opponentDrivetrain = this.opponent.drivetrain;
+    const lead = opponentDrivetrain.distance - this.player.distance;
+    this.opponentCar.x = clamp(VIEW.playerX + lead * VIEW.pxPerMetreLead, 24, VIEW.width - 24);
+    this.opponentCar.y = VIEW.aiLaneY + this.jitter(opponentDrivetrain.redlined, 0.9, 0.25);
     this.playerCar.y = VIEW.playerLaneY + this.jitter(this.player.redlined, 1.1, 0.3) + (this.player.shifting ? 1.5 : 0);
 
-    this.syncWheels(this.playerWheels, this.playerCar.x, this.playerCar.y, (this.player.speed / DRIVETRAIN.wheelRadiusM) * 3 * this.frameDt);
-    this.syncWheels(this.aiWheels, this.aiCar.x, this.aiCar.y, (this.ai.car.speed / DRIVETRAIN.wheelRadiusM) * 3 * this.frameDt);
+    const wheelDx = (CAR_WHEELS.rearX - CAR_SPRITE.width / 2) * CAR_SCALE;
+    const wheelFrontDx = (CAR_WHEELS.frontX - CAR_SPRITE.width / 2) * CAR_SCALE;
+    const wheelDy = (CAR_SPRITE.height - CAR_WHEELS.y) * CAR_SCALE;
+    this.syncWheels(this.playerWheels, this.playerCar.x, this.playerCar.y, wheelDx, wheelFrontDx, wheelDy, (this.player.speed / DRIVETRAIN.wheelRadiusM) * 3 * this.frameDt);
+    this.syncWheels(
+      this.opponentWheels,
+      this.opponentCar.x,
+      this.opponentCar.y,
+      wheelDx,
+      wheelFrontDx,
+      wheelDy,
+      (opponentDrivetrain.speed / DRIVETRAIN.wheelRadiusM) * 3 * this.frameDt,
+    );
   }
 
   /** Wheelspin chatter when the limiter is bouncing, otherwise a light idle rumble. */
@@ -580,39 +707,56 @@ export class RaceScene extends Phaser.Scene {
     return Math.sin(this.elapsed * (redlined ? 38 : 15)) * (redlined ? hot : calm);
   }
 
-  private syncWheels(wheels: Phaser.GameObjects.Image[], carX: number, carY: number, spin: number): void {
+  private syncWheels(
+    wheels: Phaser.GameObjects.Image[],
+    carX: number,
+    carY: number,
+    rearDx: number,
+    frontDx: number,
+    dy: number,
+    spin: number,
+  ): void {
     wheels.forEach((wheel, index) => {
       wheel.angle += spin;
-      wheel.x = carX + (index === 0 ? -20 : 20);
-      wheel.y = carY - 9;
+      wheel.x = carX + (index === 0 ? rearDx : frontDx);
+      wheel.y = carY - dy;
     });
   }
 
   private renderHud(): void {
-    const { rpmBarX: x, rpmBarWidth: width } = VIEW;
-    const rpm = this.phase === 'staging' ? this.stagingRevs : this.player.rpm;
-    const inSweetSpot = rpm >= DRIVETRAIN.shiftUpRpm - 380 && rpm <= DRIVETRAIN.shiftUpRpm + 380;
+    const rpm = this.phase === 'staging' || this.phase === 'countdown' ? this.stagingRevs : this.player.rpm;
+    const inSweetSpot = rpm >= SHIFT_BAND[0] && rpm <= SHIFT_BAND[1];
 
-    this.rpmBarFill.width = (rpm / DRIVETRAIN.redlineRpm) * width;
-    this.rpmBarFill.fillColor = this.player.redlined ? 0xff3b30 : inSweetSpot ? 0x37e0c8 : 0x2f8f7d;
-    this.rpmNeedle.x = x + (rpm / DRIVETRAIN.redlineRpm) * width;
+    this.needle.setAngle(TACH.startDeg + (rpm / MAX_RPM) * TACH.sweepDeg);
+    this.needle.fillColor = this.player.redlined ? 0xff3b30 : inSweetSpot ? 0x37e0c8 : 0xffffff;
     this.rpmText.setText(Math.round(rpm).toLocaleString('en-US'));
-    this.gearText.setText(String(this.player.gear + 1));
-    this.speedText.setText(String(Math.round(this.player.speedKph)));
-    this.timeText.setText(`${(this.phase === 'staging' ? 0 : this.raceTime).toFixed(2)}s`);
+    this.gearText.setText(this.phase === 'racing' ? String(this.player.gear + 1) : '1');
+    this.speedText.setText(String(Math.round(this.phase === 'racing' ? this.player.speedKph : 0)));
+    this.timeText.setText((this.phase === 'racing' ? this.raceTime : 0).toFixed(2));
 
-    const progressWidth = VIEW.width - 36;
-    this.playerProgress.width = progressWidth * Math.min(this.player.distance / RACE_DISTANCE_M, 1);
-    this.aiProgress.width = progressWidth * Math.min(this.ai.car.distance / RACE_DISTANCE_M, 1);
+    const opponentDrivetrain = this.opponent.drivetrain;
+    this.playerProgress.width = VIEW.progressWidth * Math.min(this.player.distance / RACE_LENGTH, 1);
+    this.opponentProgress.width = VIEW.progressWidth * Math.min(opponentDrivetrain.distance / RACE_LENGTH, 1);
+
+    if (this.phase === 'racing') {
+      const gap = opponentDrivetrain.distance - this.player.distance;
+      this.leadText.setText(
+        gap >= 0 ? `TRAILING ${gap.toFixed(1)} M` : `LEADING ${Math.abs(gap).toFixed(1)} M`,
+      );
+      this.leadText.setColor(gap >= 0 ? '#ff7a5c' : '#37e0c8');
+      this.splitText.setText(
+        this.raceData.bestTime ? `BEST ${this.raceData.bestTime.toFixed(2)}s` : 'NO TIME ON RECORD',
+      );
+    } else {
+      this.leadText.setText('');
+      this.splitText.setText('');
+    }
 
     if (this.phase === 'staging') {
       const inLaunchSweet = this.stagingRevs >= LAUNCH_BAND_SWEET[0] && this.stagingRevs <= LAUNCH_BAND_SWEET[1];
       const inLaunchGood = this.stagingRevs >= LAUNCH_BAND_GOOD[0] && this.stagingRevs <= LAUNCH_BAND_GOOD[1];
-      this.stagingBarFill.width = (this.stagingRevs / DRIVETRAIN.redlineRpm) * VIEW.stageBarWidth;
+      this.stagingBarFill.width = (this.stagingRevs / MAX_RPM) * VIEW.stageBarWidth;
       this.stagingBarFill.fillColor = inLaunchSweet ? 0x37e0c8 : inLaunchGood ? 0x2f8f7d : 0xff9f45;
-      this.gearText.setText('1');
-      this.rpmText.setText(Math.round(this.stagingRevs).toLocaleString('en-US'));
-      this.speedText.setText('0');
     }
   }
 

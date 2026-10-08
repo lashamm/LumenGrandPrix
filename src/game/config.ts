@@ -2,9 +2,29 @@
  * Central tuning table for the whole prototype.
  * Every magic number a designer would want to touch lives here.
  */
-import type { AiDifficulty } from './types';
+import type { AiDifficulty, BodyType } from './types';
 
-export const RACE_DISTANCE_M = 300;
+// ---------------------------------------------------------------------------
+// Canonical race constants. Nothing below this block should restate these.
+// ---------------------------------------------------------------------------
+
+/** Strip length in metres. */
+export const RACE_LENGTH = 300;
+/** Existing name for {@link RACE_LENGTH}; kept so callers do not scatter. */
+export const RACE_DISTANCE_M = RACE_LENGTH;
+
+/** Engine redline. The tachometer face and the rev limiter both derive from it. */
+export const MAX_RPM = 8000;
+/** The shift point the whole torque curve is shaped around. */
+export const OPTIMAL_SHIFT_RPM = 6000;
+/** Rev limiter sits just under redline so the limiter is reachable but not instant. */
+export const REV_LIMIT_RPM = MAX_RPM - 100;
+
+/** Platform fee taken from the pot on a settled race (0.1 === 10%). */
+export const PLATFORM_FEE = 0.1;
+
+/** Prefactor for the pot: winner receives `entry * POOL_PER_ENTRY * (1 - PLATFORM_FEE)`. */
+export const POOL_PER_ENTRY = 2;
 
 /** Engine / gearbox geometry. */
 export const DRIVETRAIN = {
@@ -18,9 +38,26 @@ export const DRIVETRAIN = {
    */
   gearRatios: [5.025, 3.807, 2.884, 2.185, 1.656, 1.255],
   idleRpm: 900,
-  redlineRpm: 8000,
-  shiftUpRpm: 6000,
-  revLimitRpm: 7900,
+  redlineRpm: MAX_RPM,
+  shiftUpRpm: OPTIMAL_SHIFT_RPM,
+  revLimitRpm: REV_LIMIT_RPM,
+} as const;
+
+/** Circumference of the driven wheel, metres — converts m/s to RPM. */
+export const WHEEL_CIRCUMFERENCE_M = 2 * Math.PI * DRIVETRAIN.wheelRadiusM;
+
+/** Body silhouettes the pixel-art factory can draw. */
+export const BODY_TYPES: readonly BodyType[] = ['coupe', 'sedan', 'hatchback'];
+
+/** HUD geometry for the circular tachometer, in virtual canvas pixels. */
+export const TACH = {
+  centreX: 74,
+  centreY: 226,
+  radius: 42,
+  /** Sweep of the gauge in degrees, clockwise from 12 o'clock. */
+  sweepDeg: 270,
+  /** Needle angle at 0 RPM, relative to 12 o'clock (degrees, clockwise). */
+  startDeg: -135,
 } as const;
 
 export const PHYSICS = {

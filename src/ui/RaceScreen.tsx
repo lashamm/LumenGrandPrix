@@ -1,66 +1,129 @@
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react';
 import Phaser from 'phaser';
-import { AI_OPPONENT, STARTER_CAR } from '../game/car/carData';
-import { PHASER, SCENE_KEYS } from '../game/config';
-import { createControlState } from '../game/control';
+import { AI_OPPONENT, type CarDefinition } from '../game/car/carData';
+import { carFromCustomization } from '../game/car/customization';
+import { LAUNCH, OPTIMAL_SHIFT_RPM, PHASER, SCENE_KEYS } from '../game/config';
+import { createControlState, KEY_BINDINGS, keyLabel } from '../game/control';
 import { createPhaserGame } from '../game/game';
+import type { OpponentDescriptor } from '../game/opponents/RaceOpponent';
 import { RaceScene, type RacePhase, type RaceSceneData } from '../game/scenes/RaceScene';
-import type { RaceResult } from '../game/types';
+import { RACE_MODE_META, type NetworkId, type RaceResult, type UpgradeLevels } from '../game/types';
+import {
+  escrowFor,
+  usesEntry,
+  type EntryReceipt,
+  type RaceEntryRequest,
+  type RaceOutcome,
+  type Settlement,
+} from '../racing/escrow';
 import type { PlayerProfile } from '../state/storage';
+import type { RaceSetup } from './RaceSetupScreen';
 import { RaceControls } from './RaceControls';
-import { RaceResultPanel } from './MainMenu';
+import { RaceResultPanel } from './ResultPanel';
+import { NetworkBadge } from './NetworkIndicator';
 import { formatTime } from './format';
+
+/** The AI has always been run on this mid build — see scripts/simulate.ts. */
+const AI_LEVELS: UpgradeLevels = { engine: 2, weight: 2, aero: 2, brakes: 2 };
 
 /**
  * Hosts the Phaser canvas and the control overlay.
  *
- * Phaser owns the simulation, React owns navigation and the result card. The
- * only things crossing the boundary are the shared `ControlState` object (a plain
- * mutable struct, so no re-renders per input) and two callbacks.
+ * Phaser owns the simulation, React owns navigation, the entry ledger and the
+ * result card. The only things crossing the boundary are the shared
+ * `ControlState` object (a plain mutable struct, so no re-renders per input)
+ * and two callbacks.
  */
 export function RaceScreen({
   profile,
+  setup,
   onBack,
+  onSetup,
   onFinish,
 }: {
   profile: PlayerProfile;
+  setup: RaceSetup;
   onBack: () => void;
-  onFinish: (result: RaceResult) => void;
+  onSetup: () => void;
+  onFinish: (result: RaceResult, settlement: Settlement | null) => void;
 }): ReactNode {
   const controls = useMemo(() => createControlState(), []);
-  const [phase, setPhase] = useState<RacePhase>('staging');
+  const [phase, setPhase] = useState<RacePhase>('countdown');
   const [result, setResult] = useState<RaceResult | null>(null);
   const [runId, setRunId] = useState(0);
+  const [settlement, setSettlement] = useState<Settlement | null>(null);
+  const [entryError, setEntryError] = useState<string | null>(null);
+  const [entering, setEntering] = useState(false);
 
   /**
-   * Snapshot the car and difficulty for this race session.
+   * Snapshot the car, difficulty and stake for this race session.
    *
    * Recording a result writes a new best time into the profile, which re-renders
    * this screen. Reading the build from the live profile would therefore change
-   * the scene payload mid-run and tear the race down. A snapshot keeps the race
-   * stable; switching difficulty means going back to the menu, which remounts.
+   * the scene payload mid-run and tear the race down.
    */
   const [session] = useState(() => ({
-    levels: profile.upgrades,
+    levels: profile.car.performance,
+    car: carFromCustomization(profile.car, 'LUMEN MK-I'),
     difficulty: profile.difficulty,
     bestTime: profile.bestTime,
+    mode: setup.mode,
+    entrySol: setup.entrySol,
+    network: profile.network as NetworkId,
   }));
+
+  const entryRequest = useMemo<RaceEntryRequest>(
+    () => ({ network: session.network, mode: session.mode, amountSol: session.entrySol ?? 0 }),
+    [session.mode, session.network, session.entrySol],
+  );
+  const wantsEntry = usesEntry(session.mode);
+  const [receipt, setReceipt] = useState<EntryReceipt | null>(setup.receipt);
+  const opponentLabel = AI_OPPONENT.name;
+
+  const opponent = useMemo<OpponentDescriptor>(
+    () => ({
+      kind: 'ai',
+      car: AI_OPPONENT,
+      label: opponentLabel,
+      setup: { difficulty: session.difficulty, levels: { ...AI_LEVELS }, seed: 0x51ed5eed + runId * 7919 },
+    }),
+    [opponentLabel, runId, session.difficulty],
+  );
+
+  const settle = useCallback(
+    async (raceResult: RaceResult) => {
+      if (!wantsEntry) return;
+      const outcome: RaceOutcome = raceResult.win
+        ? 'win'
+        : raceResult.playerFinished || raceResult.aiFinished
+          ? 'loss'
+          : 'draw';
+      try {
+        const next = await escrowFor(session.network).settle(entryRequest, outcome);
+        setSettlement(next);
+        onFinish(raceResult, next);
+      } catch (cause) {
+        setEntryError(cause instanceof Error ? cause.message : 'Settlement failed.');
+        onFinish(raceResult, null);
+      }
+    },
+    [entryRequest, onFinish, session.network, wantsEntry],
+  );
 
   const sceneData: RaceSceneData = useMemo(
     () => ({
-      playerLevels: session.levels,
-      playerCar: STARTER_CAR,
-      aiCar: AI_OPPONENT,
-      difficulty: session.difficulty,
+      playerLevels: session.levels as UpgradeLevels,
+      playerCar: session.car as CarDefinition,
+      opponent,
       bestTime: session.bestTime,
       controls,
       onPhaseChange: setPhase,
       onComplete: (raceResult: RaceResult) => {
         setResult(raceResult);
-        onFinish(raceResult);
+        void settle(raceResult);
       },
     }),
-    [controls, onFinish, session],
+    [controls, opponent, session.bestTime, session.car, session.levels, settle],
   );
 
   /**
@@ -93,61 +156,120 @@ export function RaceScreen({
     };
   }, [sceneData, runId]);
 
-  const restart = useCallback(() => {
+  const restart = useCallback(async () => {
     controls.gas = false;
+    controls.brake = false;
     controls.upshift = false;
     controls.downshift = false;
     setResult(null);
-    setPhase('staging');
+    setSettlement(null);
+    setEntryError(null);
+    setPhase('countdown');
+
+    if (wantsEntry) {
+      setEntering(true);
+      try {
+        const next = await escrowFor(session.network).enter(entryRequest);
+        setReceipt(next);
+      } catch (cause) {
+        setEntryError(cause instanceof Error ? cause.message : 'Entry could not be locked.');
+        setEntering(false);
+        return;
+      }
+      setEntering(false);
+    }
+
     setRunId((id) => id + 1);
-  }, [controls]);
+  }, [controls, entryRequest, session.network, wantsEntry]);
+
+  const meta = RACE_MODE_META[session.mode];
 
   return (
     <div className="screen screen--race">
       <header className="race__bar">
-        <button
-          type="button"
-          className="btn btn--ghost btn--sm"
-          onClick={onBack}
-          disabled={phase !== 'finished'}
-        >
-          ‹ MENU
+        <button type="button" className="btn btn--ghost btn--sm" onClick={onBack} disabled={entering}>
+          ‹ QUIT
         </button>
         <div className="race__title">
-          <span className="race__lane">{STARTER_CAR.name}</span>
+          <span className="race__lane">{session.car.name}</span>
           <span className="race__vs">VS</span>
-          <span className="race__lane race__lane--ai">{AI_OPPONENT.name}</span>
+          <span className="race__lane race__lane--ai">{opponentLabel}</span>
         </div>
         <div className="race__meta">
-          <span className="badge">{profile.difficulty.toUpperCase()}</span>
-          <span className="badge badge--devnet">DEVNET</span>
-          <span className="mono race__best">BEST {formatTime(profile.bestTime)}</span>
+          <span className="badge">{meta.label}</span>
+          {session.entrySol !== null ? (
+            <span className="badge badge--stake">{session.entrySol.toFixed(2)} STAKE</span>
+          ) : null}
+          <span className="badge">{session.difficulty.toUpperCase()}</span>
+          <NetworkBadge network={session.network} />
+          <span className="mono race__best">BEST {formatTime(session.bestTime)}</span>
         </div>
       </header>
 
       <div className="stage">
-        <div className="stage__canvas" id="lumen-race-root" style={{ aspectRatio: `${PHASER.width} / ${PHASER.height}` }} />
+        <div
+          className="stage__canvas"
+          id="lumen-race-root"
+          style={{ aspectRatio: `${PHASER.width} / ${PHASER.height}` }}
+        />
       </div>
 
       <RaceControls controls={controls} phase={result ? 'finished' : phase} />
 
       <footer className="race__legend">
-        <span>
-          <kbd>SPACE</kbd> gas
-        </span>
-        <span>
-          <kbd>SHIFT</kbd> upshift
-        </span>
-        <span>
-          <kbd>Q</kbd> downshift
-        </span>
+        {KEY_BINDINGS.map((binding) => (
+          <span key={binding.action}>
+            <kbd>{keyLabel(binding.keys[0])}</kbd> {binding.label.toLowerCase()}
+          </span>
+        ))}
         <span className="race__legend-note">
-          Revs climb as you accelerate. Upshift when the needle reaches the teal band.
+          Stage with GAS, release near {LAUNCH.optimalRpm.toLocaleString('en-US')} RPM, then shift on
+          the teal band at {OPTIMAL_SHIFT_RPM.toLocaleString('en-US')} RPM.
         </span>
+        {wantsEntry && receipt ? (
+          <span className="race__legend-note">
+            ENTRY <span className="mono">{receipt.reference}</span> · {receipt.onChain ? 'ON-CHAIN' : 'LOCAL LEDGER'}
+          </span>
+        ) : null}
       </footer>
 
+      {entering && (
+        <div className="dialog-overlay">
+          <div className="dialog dialog--busy">
+            <p>LOCKING ENTRY…</p>
+          </div>
+        </div>
+      )}
+
+      {entryError && !result && (
+        <div className="result-overlay">
+          <div className="result-card result-card--error">
+            <p className="result-card__verdict">ENTRY FAILED</p>
+            <p className="panel__error">{entryError}</p>
+            <div className="result-card__actions">
+              <button type="button" className="btn btn--primary" onClick={onSetup}>
+                BACK TO RACE SETUP
+              </button>
+              <button type="button" className="btn btn--ghost" onClick={onBack}>
+                MENU
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {result && (
-        <RaceResultPanel result={result} profile={profile} onAgain={restart} onMenu={onBack} />
+        <RaceResultPanel
+          result={result}
+          profile={profile}
+          opponentLabel={opponentLabel}
+          entrySol={session.entrySol}
+          currency={session.network === 'mainnet' ? 'SOL' : 'DEVNET SOL'}
+          settlement={settlement}
+          onAgain={() => void restart()}
+          onSetup={onSetup}
+          onMenu={onBack}
+        />
       )}
     </div>
   );
