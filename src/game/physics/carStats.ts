@@ -13,6 +13,11 @@ export interface CarStats {
   brakeForceN: number;
   /** Traction budget in N — caps how hard we can put power down. */
   tractionLimitN: number;
+  /**
+   * Tire friction coefficient (µ). Only the circuit physics reads it;
+   * drag racing is unaffected by the tires upgrade.
+   */
+  tireGrip: number;
 }
 
 /** Human-readable percentage contribution of each upgrade level, for the UI. */
@@ -35,18 +40,20 @@ export function deriveStats(levels: UpgradeLevels, bonus = 0): CarStats {
   const weightLevel = levels.weight;
   const aeroLevel = levels.aero;
   const brakeLevel = levels.brakes;
+  const tireLevel = levels.tires;
 
   const peakTorqueNm = LEVEL_TABLE.engine[engineLevel - 1] * (1 + bonus);
   const massKg = LEVEL_TABLE.weight[weightLevel - 1] * (1 - bonus * 0.5);
   const dragArea = LEVEL_TABLE.aero[aeroLevel - 1] * (1 - bonus * 0.5);
   const brakeForceN = LEVEL_TABLE.brakes[brakeLevel - 1] * (1 + bonus);
+  const tireGrip = LEVEL_TABLE.tires[tireLevel - 1] * (1 + bonus * 0.5);
 
   // Traction budget: more aero downforce + lighter car = more grip before spin.
   const weightFactor = LEVEL_TABLE.weight[0] / massKg;
   const aeroFactor = LEVEL_TABLE.aero[0] / dragArea;
   const tractionLimitN = massKg * 9.81 * (1.25 + 0.16 * (weightFactor - 1) + 0.16 * (aeroFactor - 1));
 
-  return { peakTorqueNm, massKg, dragArea, brakeForceN, tractionLimitN };
+  return { peakTorqueNm, massKg, dragArea, brakeForceN, tractionLimitN, tireGrip };
 }
 
 /**
@@ -157,7 +164,7 @@ export function estimateTopSpeedKph(stats: CarStats): number {
  * WEIGHT, AERO and the resistance terms are inverted (lower raw value is better).
  */
 export function normalisedBars(stats: CarStats) {
-  const best = deriveStats({ engine: 3, weight: 3, aero: 3, brakes: 3 });
+  const best = deriveStats({ engine: 3, weight: 3, aero: 3, brakes: 3, tires: 3 });
   const power = peakPowerKw(stats);
   const bestPower = peakPowerKw(best);
   const bestTopSpeed = estimateTopSpeedKph(best) || 1;
@@ -168,5 +175,6 @@ export function normalisedBars(stats: CarStats) {
     BRAKING: (stats.brakeForceN / best.brakeForceN) * 100,
     ACCELERATION: (power / stats.massKg / (bestPower / best.massKg)) * 100,
     TOP_SPEED: (estimateTopSpeedKph(stats) / bestTopSpeed) * 100,
+    GRIP: (stats.tireGrip / best.tireGrip) * 100,
   };
 }

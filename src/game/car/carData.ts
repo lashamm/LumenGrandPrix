@@ -80,17 +80,28 @@ export const CATEGORY_META: Record<UpgradeCategory, CategoryMeta> = {
     effect: '+ braking',
     levelNames: ['Stock Drums', 'Street Discs', 'Twin-Piston Drilled'],
   },
+  tires: {
+    id: 'tires',
+    label: 'TIRES',
+    blurb: 'Cornering grip. Keeps the circuit car planted through bends.',
+    effect: '+ grip',
+    levelNames: ['Street Rubber', 'Sport Soft', 'Circuit Soft'],
+  },
 };
 
 /**
  * Per-level tuning. Deliberately gentle: the philosophy is
  * "your car gives you potential, your skill decides whether you can use it."
+ *
+ * TIRES holds the friction coefficient the circuit physics uses directly
+ * (drag racing never reads it, so the drag mode is unchanged).
  */
 export const LEVEL_TABLE: Record<UpgradeCategory, readonly number[]> = {
   engine: [220, 245, 272],
   weight: [1150, 1060, 970],
   aero: [0.78, 0.72, 0.66],
   brakes: [5500, 7000, 8500],
+  tires: [1.25, 1.37, 1.49],
 };
 
 export const DEFAULT_UPGRADES: UpgradeLevels = {
@@ -98,6 +109,7 @@ export const DEFAULT_UPGRADES: UpgradeLevels = {
   weight: 1,
   aero: 1,
   brakes: 1,
+  tires: 1,
 };
 
 export function isValidLevels(levels: Partial<UpgradeLevels>): boolean {

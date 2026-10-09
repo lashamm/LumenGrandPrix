@@ -196,6 +196,40 @@ export const DEFAULT_AI_DIFFICULTY: AiDifficulty = 'medium';
  */
 export const SCENE_KEYS = {
   race: 'RaceScene',
+  circuit: 'CircuitRaceScene',
+} as const;
+
+/**
+ * Circuit Racing tuning. Everything a designer would want to
+ * touch about the circuit mode lives here.
+ */
+export const CIRCUIT = {
+  /** Drivable width of the circuit, metres. */
+  trackWidthM: 16,
+  /** Half the drivable width. */
+  trackHalfWidthM: 8,
+  /** Centreline sample spacing, metres. */
+  stepM: 1.5,
+  /** Base circle radius the generator wraps motifs around. */
+  baseRadiusM: 140,
+  /** Tightest corner the generator may emit, in radius metres. */
+  minRadiusM: 13,
+  minLengthM: 480,
+  maxLengthM: 3200,
+  /** Deterministic generation attempts before a fallback is used. */
+  maxAttempts: 48,
+  /** Track bitmap resolution: texture pixels per world metre. */
+  pxPerM: 3,
+  /** Camera zoom: screen pixels per world metre. */
+  camZoom: 5.5,
+  /** Default race distance. */
+  totalLapsDefault: 3,
+  /** Grid: rows of two cars. */
+  maxGridSize: 6,
+  /** Seconds per countdown step. */
+  countdownStepS: 0.8,
+  /** Countdown steps before GO. */
+  countdownSteps: 3,
 } as const;
 
 export const PHASER = {

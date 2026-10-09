@@ -11,7 +11,8 @@
     "typecheck": "tsc -b",
     "sim": "tsx scripts/simulate.ts",
     "sweep": "tsx scripts/sweep.ts",
-    "car-art": "tsx scripts/verify-car-art.ts"
+    "car-art": "tsx scripts/verify-car-art.ts",
+    "test": "tsx scripts/test-circuit.ts"
   },
   "dependencies": {
     "@solana/wallet-adapter-base": "^0.9.23",

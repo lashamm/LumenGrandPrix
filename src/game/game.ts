@@ -2,16 +2,19 @@ import Phaser from 'phaser';
 import { PHASER } from './config';
 
 /**
- * Creates the Phaser game used by the Race screen.
+ * Creates the Phaser game used by the race screens.
  *
  * The React shell owns the lifecycle (mount/unmount on navigation) and hands the
  * race payload to the scene when the game reports READY, which keeps navigation
  * state in React and simulation state inside Phaser.
+ *
+ * `parent` is the DOM id of the canvas host, so the drag race and the
+ * circuit race can each own a stage without sharing a div.
  */
-export function createPhaserGame(): Phaser.Game {
+export function createPhaserGame(parent = 'lumen-race-root'): Phaser.Game {
   return new Phaser.Game({
     type: Phaser.AUTO,
-    parent: 'lumen-race-root',
+    parent,
     width: PHASER.width,
     height: PHASER.height,
     backgroundColor: PHASER.backgroundColor,

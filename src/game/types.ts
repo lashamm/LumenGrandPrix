@@ -1,8 +1,8 @@
-export type UpgradeCategory = 'engine' | 'weight' | 'aero' | 'brakes';
+export type UpgradeCategory = 'engine' | 'weight' | 'aero' | 'brakes' | 'tires';
 
 export type UpgradeLevels = Record<UpgradeCategory, number>;
 
-export const UPGRADE_CATEGORIES: UpgradeCategory[] = ['engine', 'weight', 'aero', 'brakes'];
+export const UPGRADE_CATEGORIES: UpgradeCategory[] = ['engine', 'weight', 'aero', 'brakes', 'tires'];
 
 export const MIN_LEVEL = 1;
 export const MAX_LEVEL = 3;

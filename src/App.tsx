@@ -2,6 +2,7 @@ import { Suspense, lazy, useCallback, useEffect, useState } from 'react';
 import { MainMenu } from './ui/MainMenu';
 import { CustomizeScreen, GarageScreen } from './ui/CustomizeScreen';
 import { RaceSetupScreen, type RaceSetup } from './ui/RaceSetupScreen';
+import { CircuitSetupScreen } from './ui/CircuitSetupScreen';
 import { WalletPanel } from './ui/WalletPanel';
 import { SettingsScreen } from './ui/SettingsScreen';
 import { NetworkProvider, useNetwork } from './network/NetworkProvider';
@@ -15,6 +16,7 @@ import {
   type RaceMode,
   type RaceResult,
 } from './game/types';
+import type { CircuitRaceResult, CircuitRaceSetup } from './game/circuit/types';
 import type { Settlement } from './racing/escrow';
 
 /**
@@ -22,6 +24,9 @@ import type { Settlement } from './racing/escrow';
  * the player actually races, so the menu paints without paying for the engine.
  */
 const RaceScreen = lazy(() => import('./ui/RaceScreen').then((m) => ({ default: m.RaceScreen })));
+const CircuitRaceScreen = lazy(() =>
+  import('./ui/CircuitRaceScreen').then((m) => ({ default: m.CircuitRaceScreen })),
+);
 
 /**
  * Screens.
@@ -30,12 +35,22 @@ const RaceScreen = lazy(() => import('./ui/RaceScreen').then((m) => ({ default: 
  * gets a full page. The selected network lives in the profile and is published
  * through `NetworkProvider`, so every screen reads the same single source.
  */
-type Screen = 'menu' | 'setup' | 'customize' | 'garage' | 'wallet' | 'settings' | 'race';
+type Screen =
+  | 'menu'
+  | 'setup'
+  | 'customize'
+  | 'garage'
+  | 'wallet'
+  | 'settings'
+  | 'race'
+  | 'circuit-setup'
+  | 'circuit-race';
 
 export function App() {
   const [screen, setScreen] = useState<Screen>('menu');
   const [profile, setProfile] = useState<PlayerProfile>(() => loadProfile());
   const [setup, setSetup] = useState<RaceSetup | null>(null);
+  const [circuitSetup, setCircuitSetup] = useState<CircuitRaceSetup | null>(null);
 
   useEffect(() => {
     saveProfile(profile);
@@ -79,6 +94,27 @@ export function App() {
     });
   }, []);
 
+  /**
+   * Circuit results are offline practice figures: they only ever
+   * touch the local best lap and the race counter — no stake, no
+   * settlement, nothing signed.
+   */
+  const recordCircuitResult = useCallback((result: CircuitRaceResult) => {
+    setProfile((previous) => {
+      const circuitBestLap =
+        result.playerBestLap !== null &&
+        (previous.circuitBestLap === null || result.playerBestLap < previous.circuitBestLap)
+          ? result.playerBestLap
+          : previous.circuitBestLap;
+      return {
+        ...previous,
+        circuitBestLap,
+        races: previous.races + 1,
+        wins: previous.wins + (result.playerPosition === 1 ? 1 : 0),
+      };
+    });
+  }, []);
+
   return (
     <NetworkProvider network={profile.network} onChange={setNetwork}>
       <AppBody
@@ -87,10 +123,13 @@ export function App() {
         profile={profile}
         setup={setup}
         setSetup={setSetup}
+        circuitSetup={circuitSetup}
+        setCircuitSetup={setCircuitSetup}
         setCar={setCar}
         setDifficulty={setDifficulty}
         setMode={setMode}
         recordResult={recordResult}
+        recordCircuitResult={recordCircuitResult}
       />
     </NetworkProvider>
   );
@@ -102,20 +141,26 @@ function AppBody({
   profile,
   setup,
   setSetup,
+  circuitSetup,
+  setCircuitSetup,
   setCar,
   setDifficulty,
   setMode,
   recordResult,
+  recordCircuitResult,
 }: {
   screen: Screen;
   setScreen: (next: Screen) => void;
   profile: PlayerProfile;
   setup: RaceSetup | null;
   setSetup: (next: RaceSetup | null) => void;
+  circuitSetup: CircuitRaceSetup | null;
+  setCircuitSetup: (next: CircuitRaceSetup | null) => void;
   setCar: (car: CarCustomization) => void;
   setDifficulty: (difficulty: AiDifficulty) => void;
   setMode: (mode: RaceMode) => void;
   recordResult: (result: RaceResult, settlement: Settlement | null) => void;
+  recordCircuitResult: (result: CircuitRaceResult) => void;
 }) {
   const { network, config, select } = useNetwork();
   const [showNetwork, setShowNetwork] = useState(false);
@@ -200,6 +245,37 @@ function AppBody({
             }}
             onSetup={() => setScreen('setup')}
             onFinish={recordResult}
+          />
+        </Suspense>
+      );
+
+    case 'circuit-setup':
+      return (
+        <CircuitSetupScreen
+          profile={profile}
+          onBack={() => setScreen('menu')}
+          onCustomize={() => setScreen('customize')}
+          onStart={(next) => {
+            setCircuitSetup(next);
+            setScreen('circuit-race');
+          }}
+        />
+      );
+
+    case 'circuit-race':
+      if (!circuitSetup)
+        return <div className="screen screen--loading">NO CIRCUIT SELECTED</div>;
+      return (
+        <Suspense fallback={<div className="screen screen--loading">LOADING CIRCUIT…</div>}>
+          <CircuitRaceScreen
+            profile={profile}
+            setup={circuitSetup}
+            onBack={() => {
+              setCircuitSetup(null);
+              setScreen('menu');
+            }}
+            onSetup={() => setScreen('circuit-setup')}
+            onFinish={recordCircuitResult}
           />
         </Suspense>
       );

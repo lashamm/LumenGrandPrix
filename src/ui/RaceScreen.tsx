@@ -25,7 +25,7 @@ import { NetworkBadge } from './NetworkIndicator';
 import { formatTime } from './format';
 
 /** The AI has always been run on this mid build — see scripts/simulate.ts. */
-const AI_LEVELS: UpgradeLevels = { engine: 2, weight: 2, aero: 2, brakes: 2 };
+const AI_LEVELS: UpgradeLevels = { engine: 2, weight: 2, aero: 2, brakes: 2, tires: 2 };
 
 /**
  * Hosts the Phaser canvas and the control overlay.

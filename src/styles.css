@@ -1917,3 +1917,109 @@ button:disabled {
     animation: none;
   }
 }
+
+/* ---------------------------------------------------------- circuit racing -- */
+
+.circuit-preview {
+  display: block;
+  width: 100%;
+  max-width: 420px;
+  margin: 0 auto;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--bg-sunken);
+}
+
+.standings {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.standings__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.standings__head h4 {
+  margin: 0;
+  font-size: 11px;
+  letter-spacing: 0.16em;
+  color: var(--text-dim);
+}
+
+.standings__table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+  text-align: left;
+}
+
+.standings__table th {
+  font-size: 10px;
+  letter-spacing: 0.14em;
+  color: var(--text-faint);
+  font-weight: 400;
+  padding: 4px 6px;
+  border-bottom: 1px solid var(--line);
+}
+
+.standings__table td {
+  padding: 5px 6px;
+  border-bottom: 1px solid var(--line);
+  color: var(--text-dim);
+}
+
+.standings__row--player td {
+  color: var(--text);
+  background: rgba(var(--accent-rgb), 0.07);
+}
+
+.standings__driver {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.standings__dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 2px;
+  display: inline-block;
+  flex: none;
+}
+
+.lap-times {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.lap-times__list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(86px, 1fr));
+  gap: 6px;
+}
+
+.lap-times__list li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  padding: 6px 8px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--bg-sunken);
+  font-size: 11px;
+  color: var(--text-dim);
+}
+
+.lap-times__row--best {
+  border-color: var(--accent);
+  color: var(--text);
+}

@@ -20,7 +20,7 @@ import {
   type HexColor,
 } from '../game/types';
 
-/** Six garage bars, each normalised so 100 === a fully built Level 3 car. */
+/** Seven garage bars, each normalised so 100 === a fully built Level 3 car. */
 const STAT_ROWS: ReadonlyArray<[string, keyof CarReport['bars']]> = [
   ['POWER', 'POWER'],
   ['ACCEL', 'ACCELERATION'],
@@ -28,6 +28,7 @@ const STAT_ROWS: ReadonlyArray<[string, keyof CarReport['bars']]> = [
   ['WEIGHT', 'WEIGHT'],
   ['AERO', 'AERO'],
   ['BRAKING', 'BRAKING'],
+  ['GRIP', 'GRIP'],
 ];
 
 /**

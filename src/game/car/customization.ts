@@ -43,7 +43,7 @@ export const DEFAULT_CAR: CarCustomization = {
     stripes: 1,
   },
   parts: { spoiler: 1, frontBumper: 1, rearBumper: 1, hood: 1, exhaust: 1 },
-  performance: { engine: 1, weight: 1, aero: 1, brakes: 1 },
+  performance: { engine: 1, weight: 1, aero: 1, brakes: 1, tires: 1 },
 };
 
 const COSMETIC_SLOTS: ReadonlyArray<{ group: 'appearance' | 'parts' | 'wheels'; key: CosmeticCategory }> = [
@@ -305,9 +305,9 @@ export function describeCarDiff(from: CarCustomization, to: CarCustomization): C
   return changes;
 }
 
-/** Compact build code, e.g. `E2 W1 A3 B1`. */
+/** Compact build code, e.g. `E2 W1 A3 B1 T1`. */
 export function buildCode(car: CarCustomization): string {
-  return `E${car.performance.engine} W${car.performance.weight} A${car.performance.aero} B${car.performance.brakes}`;
+  return `E${car.performance.engine} W${car.performance.weight} A${car.performance.aero} B${car.performance.brakes} T${car.performance.tires}`;
 }
 
 /** Total upgrade points spent, `0`..`8`. */

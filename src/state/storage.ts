@@ -19,6 +19,8 @@ export interface PlayerProfile {
   car: CarCustomization;
   /** Best 300 m time in seconds, or null if never finished. */
   bestTime: number | null;
+  /** Best single circuit lap in seconds, or null if never set. */
+  circuitBestLap: number | null;
   races: number;
   wins: number;
   difficulty: AiDifficulty;
@@ -34,6 +36,7 @@ export const DEFAULT_PROFILE: PlayerProfile = {
   version: CAR_SCHEMA_VERSION,
   car: cloneCar(DEFAULT_CAR),
   bestTime: null,
+  circuitBestLap: null,
   races: 0,
   wins: 0,
   difficulty: DEFAULT_AI_DIFFICULTY,
@@ -69,6 +72,12 @@ export function loadProfile(): PlayerProfile {
         typeof record.bestTime === 'number' && Number.isFinite(record.bestTime) && record.bestTime > 0
           ? record.bestTime
           : null,
+      circuitBestLap:
+        typeof record.circuitBestLap === 'number' &&
+        Number.isFinite(record.circuitBestLap) &&
+        record.circuitBestLap > 0
+          ? record.circuitBestLap
+          : null,
       races: typeof record.races === 'number' && record.races >= 0 ? Math.floor(record.races) : 0,
       wins: typeof record.wins === 'number' && record.wins >= 0 ? Math.floor(record.wins) : 0,
       difficulty: DIFFICULTIES.includes(record.difficulty as AiDifficulty)
@@ -100,13 +109,14 @@ function readCar(record: Record<string, unknown>): CarCustomization {
 export function saveProfile(profile: PlayerProfile): void {
   if (typeof localStorage === 'undefined') return;
   try {
-    const { car, bestTime, races, wins, difficulty, network, mode, lastEntrySol } = profile;
+    const { car, bestTime, circuitBestLap, races, wins, difficulty, network, mode, lastEntrySol } = profile;
     localStorage.setItem(
       STORAGE_KEY,
       JSON.stringify({
         version: CAR_SCHEMA_VERSION,
         car,
         bestTime,
+        circuitBestLap,
         races,
         wins,
         difficulty,

@@ -12,7 +12,7 @@ import { RACE_LENGTH } from '../game/config';
 import { RACE_MODE_META } from '../game/types';
 import { formatSol, formatTime } from './format';
 
-type Screen = 'setup' | 'customize' | 'garage' | 'wallet' | 'settings';
+type Screen = 'setup' | 'circuit-setup' | 'customize' | 'garage' | 'wallet' | 'settings';
 
 const MENU_ITEMS: ReadonlyArray<{ id: string; label: string; blurb: string; target: Screen }> = [
   {
@@ -20,6 +20,12 @@ const MENU_ITEMS: ReadonlyArray<{ id: string; label: string; blurb: string; targ
     label: 'RACE',
     blurb: `Pick a mode, an entry, then stage on the ${RACE_LENGTH} m strip.`,
     target: 'setup',
+  },
+  {
+    id: 'circuit',
+    label: 'CIRCUIT RACING',
+    blurb: 'Throttle and brake a generated track. No steering — the tires corner for you.',
+    target: 'circuit-setup',
   },
   {
     id: 'customize',
@@ -114,6 +120,10 @@ export function MainMenu({
             <div className="panel__row">
               <span>BEST TIME</span>
               <span className="mono">{formatTime(profile.bestTime)}</span>
+            </div>
+            <div className="panel__row">
+              <span>BEST CIRCUIT LAP</span>
+              <span className="mono">{formatTime(profile.circuitBestLap)}</span>
             </div>
             <div className="panel__row">
               <span>RACES / WINS</span>
