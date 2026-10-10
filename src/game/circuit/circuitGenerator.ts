@@ -40,59 +40,59 @@ interface Motif {
 const MOTIFS: readonly Motif[] = [
   {
     id: 'straight',
-    span: 46,
-    spanJitter: 14,
+    span: 64,
+    spanJitter: 16,
     nodes: [[0.5, 1.0]],
   },
   {
     id: 'gentle',
-    span: 34,
-    spanJitter: 10,
+    span: 56,
+    spanJitter: 12,
     nodes: [
-      [0.3, 1.1],
-      [0.7, 1.1],
+      [0.35, 1.05],
+      [0.7, 1.05],
     ],
   },
   {
     id: 'sweep',
-    span: 58,
-    spanJitter: 14,
+    span: 76,
+    spanJitter: 16,
     nodes: [
-      [0.22, 1.16],
-      [0.55, 1.27],
-      [0.82, 1.12],
+      [0.28, 1.1],
+      [0.55, 1.16],
+      [0.8, 1.08],
     ],
   },
   {
     id: 'hairpin',
-    span: 26,
-    spanJitter: 8,
+    span: 74,
+    spanJitter: 14,
     nodes: [
-      [0.16, 1.3],
-      [0.36, 1.52],
-      [0.64, 1.52],
-      [0.86, 1.28],
+      [0.24, 0.96],
+      [0.42, 0.78],
+      [0.6, 0.78],
+      [0.78, 0.96],
     ],
   },
   {
     id: 's-bend',
-    span: 44,
-    spanJitter: 10,
+    span: 72,
+    spanJitter: 14,
     nodes: [
-      [0.24, 1.15],
+      [0.28, 1.08],
       [0.5, 1.0],
-      [0.76, 0.87],
+      [0.74, 0.92],
     ],
   },
   {
     id: 'chicane',
-    span: 34,
-    spanJitter: 8,
+    span: 68,
+    spanJitter: 12,
     nodes: [
-      [0.2, 1.14],
-      [0.4, 0.93],
-      [0.6, 1.13],
-      [0.8, 0.96],
+      [0.22, 1.06],
+      [0.4, 0.94],
+      [0.6, 1.06],
+      [0.8, 0.94],
     ],
   },
 ];
@@ -184,33 +184,73 @@ function nameCircuit(rng: Rng, motifs: ChosenMotif[]): string {
 // ----------------------------------------------------------------- spline --
 
 /**
- * Closed Catmull-Rom spline through the layout nodes, resampled to
- * an even arc-length step with tangents and curvature attached.
+ * Builds a closed loop from `(angle, radius)` layout nodes.
+ *
+ * The nodes are interpreted as a *radial profile* `r(θ)` — a smooth,
+ * single-valued function of the polar angle — and the track is the
+ * curve `r(θ)·(cosθ, sinθ)`. Because every ray from the origin meets
+ * the curve exactly once, the result is always a simple closed loop:
+ * it can never self-intersect, no matter how violent the radial
+ * modulation. That removes the single biggest source of generator
+ * failures. The profile is then resampled to an even arc-length step
+ * so curvature, tangents and spacing come out clean.
  */
 function buildFromMotifs(nodes: LayoutNode[], name: string): Circuit | null {
   if (nodes.length < 6) return null;
 
-  // Sample the spline densely (canvas space, y down).
-  const dense: Array<readonly [number, number]> = [];
-  const count = nodes.length;
-  const perSegment = 24;
-  for (let i = 0; i < count; i += 1) {
-    const p0 = nodes[(i - 1 + count) % count];
-    const p1 = nodes[i];
-    const p2 = nodes[(i + 1) % count];
-    const p3 = nodes[(i + 2) % count];
-    for (let j = 0; j < perSegment; j += 1) {
-      const t = j / perSegment;
-      dense.push([
-        catmullRom(p0.radius * Math.cos(p0.angle * DEG), p1.radius * Math.cos(p1.angle * DEG),
-          p2.radius * Math.cos(p2.angle * DEG), p3.radius * Math.cos(p3.angle * DEG), t),
-        catmullRom(p0.radius * Math.sin(p0.angle * DEG), p1.radius * Math.sin(p1.angle * DEG),
-          p2.radius * Math.sin(p2.angle * DEG), p3.radius * Math.sin(p3.angle * DEG), t),
-      ]);
+  // Control points, sorted by angle and folded into [0, 360).
+  const control = [...nodes]
+    .map((node) => ({ angle: ((node.angle % 360) + 360) % 360, radius: node.radius }))
+    .sort((a, b) => a.angle - b.angle);
+
+  // Drop degenerate control points that sit almost on top of their
+  // neighbour: they would only add a near-vertical radial step.
+  const trimmed: typeof control = [];
+  for (const point of control) {
+    const previous = trimmed[trimmed.length - 1];
+    if (previous && point.angle - previous.angle < 4) {
+      previous.radius = (previous.radius + point.radius) / 2;
+      continue;
     }
+    trimmed.push({ ...point });
+  }
+  if (trimmed.length < 6) return null;
+
+  const angles = trimmed.map((point) => point.angle);
+  const radii = trimmed.map((point) => point.radius);
+  const radiusAt = radialProfile(angles, radii);
+
+  // Dense polar sampling at half a degree, then a light radial
+  // smoothing pass so spline-free motors never leave a kink.
+  const denseCount = 720;
+  const denseRadius: number[] = new Array(denseCount);
+  for (let i = 0; i < denseCount; i += 1) {
+    denseRadius[i] = radiusAt((i * 360) / denseCount);
+  }
+  smoothScalarsInPlace(denseRadius, 2);
+  const dense: Array<readonly [number, number]> = new Array(denseCount);
+  for (let i = 0; i < denseCount; i += 1) {
+    const a = ((i * 360) / denseCount) * DEG;
+    dense[i] = [denseRadius[i] * Math.cos(a), denseRadius[i] * Math.sin(a)];
   }
 
-  // Resample at a fixed arc-length step, walking segment by segment.
+  return resampleAndFinish(dense, name);
+}
+
+/**
+ * Resamples a dense closed polyline to a fixed arc-length step, smooths it
+ * and builds the finished `Circuit`.
+ *
+ * Shared by the radial-profile generator and the explicit-path builder so
+ * both produce byte-for-byte identical kinds of track.
+ */
+function resampleAndFinish(
+  dense: ReadonlyArray<readonly [number, number]>,
+  name: string,
+  smoothPasses = 1,
+): Circuit | null {
+  if (dense.length < 3) return null;
+
   const step = CIRCUIT.stepM;
   const samples: Array<[number, number]> = [[dense[0][0], dense[0][1]]];
   let carried = 0;
@@ -248,15 +288,46 @@ function buildFromMotifs(nodes: LayoutNode[], name: string): Circuit | null {
 
   // One round of circular Laplacian smoothing softens spline overshoot
   // (which is what would otherwise make a hairpin impossibly tight).
-  smoothPositions(samples, 1);
+  if (smoothPasses > 0) smoothPositions(samples, smoothPasses);
 
   return finishCircuit(samples, name);
 }
 
-function catmullRom(p0: number, p1: number, p2: number, p3: number, t: number): number {
-  const t2 = t * t;
-  const t3 = t2 * t;
-  return 0.5 * (2 * p1 + (-p0 + p2) * t + (2 * p0 - 5 * p1 + 4 * p2 - p3) * t2 + (-p0 + 3 * p1 - 3 * p2 + p3) * t3);
+/**
+ * Smooth, single-valued radius function through the control points.
+ *
+ * Uses smoothstep between neighbours (C1, no overshoot), evaluated by
+ * polar angle with a wrap-around segment back to the first node. The
+ * result is the `r(θ)` of the star-shaped track.
+ */
+function radialProfile(angles: readonly number[], radii: readonly number[]): (deg: number) => number {
+  const count = angles.length;
+  return (deg: number): number => {
+    const a = ((deg % 360) + 360) % 360;
+    for (let i = 0; i < count; i += 1) {
+      const a0 = angles[i];
+      const a1 = i + 1 < count ? angles[i + 1] : angles[0] + 360;
+      if (a >= a0 && a < a1) {
+        const t = (a - a0) / (a1 - a0);
+        const smooth = t * t * (3 - 2 * t);
+        return radii[i] + (radii[(i + 1) % count] - radii[i]) * smooth;
+      }
+    }
+    return radii[0];
+  };
+}
+
+/** In-place circular mean filter over a numeric array. */
+function smoothScalarsInPlace(values: number[], window: number): void {
+  const n = values.length;
+  const copy = values.slice();
+  for (let i = 0; i < n; i += 1) {
+    let sum = 0;
+    for (let j = -window; j <= window; j += 1) {
+      sum += copy[(i + j + n) % n];
+    }
+    values[i] = sum / (window * 2 + 1);
+  }
 }
 
 /** In-place circular smoothing of `[x, y]` pairs. */
@@ -447,4 +518,125 @@ function emergencyLoop(): Circuit {
  */
 export function buildCircuitFromNodes(nodes: LayoutNode[], name: string): Circuit | null {
   return buildFromMotifs(nodes, name);
+}
+
+/** The validation the generator runs on its own candidates, exposed for tests. */
+export function isValidCircuit(circuit: Circuit): boolean {
+  return validateCircuit(circuit);
+}
+
+// ------------------------------------------------------- explicit paths ----
+
+/**
+ * Builds a circuit from an explicit 2D centreline.
+ *
+ * The control points are **not** a radial profile: they are any `[x, y]`
+ * positions in metres, in loop order, so a layout can trace a real circuit
+ * shape instead of a star-shaped blob. They are threaded with a closed
+ * *centripetal* Catmull-Rom spline (alpha = 0.5), which passes through every
+ * point and — unlike uniform Catmull-Rom — never loops back on itself between
+ * close control points, so tight hairpins stay clean. The dense spline is then
+ * resampled and finished exactly like a generated track, which is what keeps
+ * the physics, the AI and the art unchanged.
+ *
+ * Returns null when the layout is too short to form a loop; the caller decides
+ * whether an invalid layout is fatal (it should not be — validate it in tests).
+ */
+export function buildCircuitFromPath(
+  points: ReadonlyArray<readonly [number, number]>,
+  name: string,
+  smoothPasses = 1,
+): Circuit | null {
+  const clean = dedupePoints(points);
+  if (clean.length < 4) return null;
+  return resampleAndFinish(catmullRomClosed(clean), name, smoothPasses);
+}
+
+/** Drops consecutive control points that sit closer than `minGapM` apart. */
+function dedupePoints(
+  points: ReadonlyArray<readonly [number, number]>,
+  minGapM = 2,
+): Array<readonly [number, number]> {
+  const out: Array<readonly [number, number]> = [];
+  for (const point of points) {
+    const previous = out[out.length - 1];
+    if (previous && Math.hypot(point[0] - previous[0], point[1] - previous[1]) < minGapM) continue;
+    out.push([point[0], point[1]]);
+  }
+  // Also fold the wrap-around seam.
+  if (
+    out.length > 2 &&
+    Math.hypot(out[0][0] - out[out.length - 1][0], out[0][1] - out[out.length - 1][1]) < minGapM
+  ) {
+    out.pop();
+  }
+  return out;
+}
+
+/**
+ * Closed centripetal Catmull-Rom spline through the control points.
+ *
+ * Each control segment is subdivided proportionally to its length, so the
+ * dense polyline approximates the true curve closely enough that the
+ * arc-length resample below never visibly cuts a corner.
+ */
+function catmullRomClosed(
+  points: ReadonlyArray<readonly [number, number]>,
+): Array<readonly [number, number]> {
+  const n = points.length;
+  const at = (index: number) => points[((index % n) + n) % n];
+  const alpha = 0.5;
+  const dense: Array<readonly [number, number]> = [];
+
+  for (let i = 0; i < n; i += 1) {
+    const p0 = at(i - 1);
+    const p1 = at(i);
+    const p2 = at(i + 1);
+    const p3 = at(i + 2);
+
+    const d1 = Math.pow(Math.hypot(p1[0] - p0[0], p1[1] - p0[1]), alpha);
+    const d2 = Math.pow(Math.hypot(p2[0] - p1[0], p2[1] - p1[1]), alpha);
+    const d3 = Math.pow(Math.hypot(p3[0] - p2[0], p3[1] - p2[1]), alpha);
+
+    const t0 = 0;
+    const t1 = t0 + Math.max(d1, 1e-4);
+    const t2 = t1 + Math.max(d2, 1e-4);
+    const t3 = t2 + Math.max(d3, 1e-4);
+
+    const segLen = Math.hypot(p2[0] - p1[0], p2[1] - p1[1]);
+    const subdiv = Math.min(240, Math.max(10, Math.ceil(segLen / 1.5)));
+    for (let s = 0; s < subdiv; s += 1) {
+      const t = t1 + ((t2 - t1) * s) / subdiv;
+      dense.push(catmullRomPoint(p0, p1, p2, p3, t0, t1, t2, t3, t));
+    }
+  }
+  return dense;
+}
+
+function catmullRomPoint(
+  p0: readonly [number, number],
+  p1: readonly [number, number],
+  p2: readonly [number, number],
+  p3: readonly [number, number],
+  t0: number,
+  t1: number,
+  t2: number,
+  t3: number,
+  t: number,
+): readonly [number, number] {
+  const a1 = mix2(p0, p1, (t1 - t) / (t1 - t0), (t - t0) / (t1 - t0));
+  const a2 = mix2(p1, p2, (t2 - t) / (t2 - t1), (t - t1) / (t2 - t1));
+  const a3 = mix2(p2, p3, (t3 - t) / (t3 - t2), (t - t2) / (t3 - t2));
+  const b1 = mix2(a1, a2, (t2 - t) / (t2 - t0), (t - t0) / (t2 - t0));
+  const b2 = mix2(a2, a3, (t3 - t) / (t3 - t1), (t - t1) / (t3 - t1));
+  return mix2(b1, b2, (t2 - t) / (t2 - t1), (t - t1) / (t2 - t1));
+}
+
+function mix2(
+  a: readonly [number, number],
+  b: readonly [number, number],
+  wa: number,
+  wb: number,
+): readonly [number, number] {
+  return [a[0] * wa + b[0] * wb, a[1] * wa + b[1] * wb];
 }

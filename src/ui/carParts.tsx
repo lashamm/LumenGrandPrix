@@ -3,7 +3,9 @@ import { CATEGORY_META, LEVEL_TABLE } from '../game/car/carData';
 import { BODY_TYPE_LABEL } from '../game/car/cosmetics';
 import { carFromCustomization } from '../game/car/customization';
 import { carPreviewUrl } from '../game/car/render';
+import { circuitCarPreviewUrl } from '../game/circuit/circuitRender';
 import { calculateCarReport, categoryEffectPercent, type CarReport } from '../game/physics/carStats';
+import type { GarageCategory } from '../state/storage';
 import {
   BODY_TYPE_ORDER,
   COLOR_PRESETS,
@@ -37,19 +39,37 @@ const STAT_ROWS: ReadonlyArray<[string, keyof CarReport['bars']]> = [
  * This is an `<img>` of the exact rows the race paints into its texture — not a
  * CSS approximation — so wheels, headlamps, spoilers and every option level
  * show up here exactly as they will in the run.
+ *
+ * `category` picks which car is drawn: the drag bay shows the road-car sprite,
+ * the circuit bay the Formula single-seater. Both come from the shared
+ * renderers the two races use, so the preview can never disagree with the grid.
  */
 export function CarPreview({
   car,
+  category = 'drag',
   compact = false,
 }: {
   car: CarCustomization;
+  category?: GarageCategory;
   compact?: boolean;
 }): ReactNode {
-  const url = carPreviewUrl(carFromCustomization(car, 'LUMEN MK-I'), compact ? 4 : 8);
+  const definition = carFromCustomization(car, 'LUMEN MK-I');
+  const url =
+    category === 'circuit'
+      ? circuitCarPreviewUrl(definition, compact ? 6 : 10)
+      : carPreviewUrl(definition, compact ? 4 : 8);
+  const alt =
+    category === 'circuit'
+      ? 'Formula circuit car preview'
+      : `${BODY_TYPE_LABEL[car.body.type]} preview`;
   return (
-    <div className={`car-preview${compact ? ' car-preview--compact' : ''}`}>
+    <div
+      className={`car-preview${compact ? ' car-preview--compact' : ''}${
+        category === 'circuit' ? ' car-preview--formula' : ''
+      }`}
+    >
       <span className="car-preview__shadow" />
-      <img className="car-preview__img" src={url} alt={`${BODY_TYPE_LABEL[car.body.type]} preview`} />
+      <img className="car-preview__img" src={url} alt={alt} />
     </div>
   );
 }

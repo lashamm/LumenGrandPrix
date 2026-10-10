@@ -106,10 +106,12 @@ export interface CircuitInput {
 export interface CircuitControlState {
   throttle: boolean;
   brake: boolean;
+  /** Whether the HUD minimap is shown. Toggled from the control overlay. */
+  mapVisible: boolean;
 }
 
 export function createCircuitControlState(): CircuitControlState {
-  return { throttle: false, brake: false };
+  return { throttle: false, brake: false, mapVisible: true };
 }
 
 export type GripState = 'green' | 'yellow' | 'red';
@@ -145,6 +147,8 @@ export interface CircuitCarState {
   heading: number;
   /** Cornering demand as a fraction of the available grip budget. */
   cornerRatio: number;
+  /** Total lateral demand (cornering + steering) as a fraction of grip. */
+  lateralRatio: number;
   /** Brake demand as a fraction of the available braking grip. */
   brakeRatio: number;
   gripRatio: number;
@@ -204,6 +208,9 @@ export interface CarSpec {
 }
 
 export interface CircuitRaceSetup {
+  /** Id of a handcrafted track, or null for a random generated circuit. */
+  trackId: string | null;
+  /** Random-generation seed, ignored when `trackId` is set. */
   seed: number;
   totalLaps: number;
   opponentCount: number;

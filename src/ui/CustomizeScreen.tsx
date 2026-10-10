@@ -25,7 +25,7 @@ import {
   type AiDifficulty,
   type CarCustomization,
 } from '../game/types';
-import type { PlayerProfile } from '../state/storage';
+import { carForCategory, type GarageCategory, type PlayerProfile } from '../state/storage';
 import {
   BodyTypePicker,
   CarPreview,
@@ -68,21 +68,27 @@ type Dialog = 'apply' | 'discard' | 'reset' | null;
  */
 export function CustomizeScreen({
   profile,
+  category,
+  onCategoryChange,
   onApply,
   onDifficulty,
   onPlay,
   onBack,
 }: {
   profile: PlayerProfile;
+  /** Which bay is being edited: the drag car or the circuit car. */
+  category: GarageCategory;
+  onCategoryChange: (category: GarageCategory) => void;
   /** Called once, with the whole car, when the player confirms a change. */
-  onApply: (car: CarCustomization) => void;
+  onApply: (category: GarageCategory, car: CarCustomization) => void;
   onDifficulty: (difficulty: AiDifficulty) => void;
   onPlay: () => void;
   onBack: () => void;
 }): ReactNode {
-  const saved = profile.car;
+  const saved = carForCategory(profile, category);
+  const isCircuit = category === 'circuit';
   const [tab, setTab] = useState<Tab>('build');
-  const [draft, setDraft] = useState<CarCustomization>(() => cloneCar(profile.car));
+  const [draft, setDraft] = useState<CarCustomization>(() => cloneCar(saved));
   const [dialog, setDialog] = useState<Dialog>(null);
   const [pendingPlay, setPendingPlay] = useState(false);
 
@@ -90,13 +96,25 @@ export function CustomizeScreen({
   const dirty = changes.length > 0;
   const report = calculateCarReport(draft);
 
+  /**
+   * The circuit bay edits a Formula single-seater: its body shape and road-car
+   * body parts (bumpers, hood, exhaust, headlights) do not exist on the sprite,
+   * so those panels are not shown there rather than offered and ignored.
+   */
+  const tabs = isCircuit ? TABS.filter((entry) => entry.id !== 'parts') : TABS;
+
+  const changeCategory = (next: GarageCategory) => {
+    if (next === 'circuit' && tab === 'parts') setTab('build');
+    onCategoryChange(next);
+  };
+
   const commit = useCallback(
     (car: CarCustomization) => {
       const next = cloneCar(car);
-      onApply(next);
+      onApply(category, next);
       setDraft(cloneCar(next));
     },
-    [onApply],
+    [onApply, category],
   );
 
   const requestBack = () => {
@@ -143,7 +161,7 @@ export function CustomizeScreen({
           <div>
             <h2 className="sheet__title">CUSTOMIZE</h2>
             <p className="sheet__sub">
-              LUMEN MK-I · build {buildScore(draft)}/8 · {BODY_TYPE_LABEL[draft.body.type]}
+              {isCircuit ? 'FORMULA' : BODY_TYPE_LABEL[draft.body.type]} · build {buildScore(draft)}/8
             </p>
           </div>
           <button type="button" className="btn btn--primary" onClick={requestPlay}>
@@ -151,8 +169,10 @@ export function CustomizeScreen({
           </button>
         </header>
 
+        <GarageBays category={category} onChange={changeCategory} />
+
         <div className="tabs" role="tablist" aria-label="Customize sections">
-          {TABS.map((entry) => (
+          {tabs.map((entry) => (
             <button
               type="button"
               key={entry.id}
@@ -214,14 +234,25 @@ export function CustomizeScreen({
 
         {tab === 'paint' && (
           <>
-            <section className="panel">
-              <h3 className="panel__title">BODY</h3>
-              <BodyTypePicker value={draft.body.type} onChange={(type) => setDraft((p) => withBody(p, type))} />
-              <p className="panel__note panel__note--muted">
-                Body type is cosmetic only in this build — every shape has the same mass and drag, so the
-                numbers below never move when you switch.
-              </p>
-            </section>
+            {isCircuit ? (
+              <section className="panel">
+                <h3 className="panel__title">LIVERY</h3>
+                <p className="panel__note panel__note--muted">
+                  The circuit car is a fixed Formula chassis — there is no body shape to pick. Paint it
+                  below; every slot lands on the sprite: BODY paints the shell, TRIM the sidepods,
+                  ACCENT the helmet, WHEELS the nose tip and rims and GLASS the cockpit.
+                </p>
+              </section>
+            ) : (
+              <section className="panel">
+                <h3 className="panel__title">BODY</h3>
+                <BodyTypePicker value={draft.body.type} onChange={(type) => setDraft((p) => withBody(p, type))} />
+                <p className="panel__note panel__note--muted">
+                  Body type is cosmetic only in this build — every shape has the same mass and drag, so the
+                  numbers below never move when you switch.
+                </p>
+              </section>
+            )}
 
             <section className="panel">
               <h3 className="panel__title">COLOURS</h3>
@@ -241,7 +272,7 @@ export function CustomizeScreen({
           </>
         )}
 
-        {tab === 'parts' && (
+        {tab === 'parts' && !isCircuit && (
           <>
             {PART_PANELS.map((panel) => (
               <section className="panel" key={panel.group}>
@@ -271,14 +302,14 @@ export function CustomizeScreen({
       <section className="garage-stage">
         <section className="panel">
           <h3 className="panel__title">
-            PREVIEW{' '}
+            {category === 'drag' ? 'DRAG CAR' : 'CIRCUIT CAR'} · PREVIEW{' '}
             <span className={`chip${dirty ? ' chip--warn' : ' chip--ok'}`}>
               {dirty ? 'UNAPPLIED' : 'SAVED ✓'}
             </span>
           </h3>
-          <CarPreview car={draft} />
+          <CarPreview car={draft} category={category} />
           <div className="panel__row">
-            <span>{BODY_TYPE_LABEL[draft.body.type]}</span>
+            <span>{isCircuit ? 'FORMULA' : BODY_TYPE_LABEL[draft.body.type]}</span>
             <span className="mono">{buildCode(draft)}</span>
           </div>
           <StatBars car={draft} />
@@ -349,28 +380,48 @@ export function CustomizeScreen({
 
       <aside className="sidebar">
         <section className="panel">
-          <h3 className="panel__title">HOW THE RACE WORKS</h3>
-          <ul className="tick-list">
-            <li>
-              Stage on the line and <strong>hold GAS</strong> to build revs. Aim for{' '}
-              <strong className="mono">{LAUNCH.optimalRpm} RPM</strong>, then release. On a keyboard that is{' '}
-              <strong className="mono">W</strong> or <strong className="mono">SPACE</strong>.
-            </li>
-            <li>
-              Hold GAS through the run. <strong>Upshift</strong> as the needle reaches{' '}
-              <strong className="mono">{DRIVETRAIN.shiftUpRpm.toLocaleString('en-US')} RPM</strong> — the
-              teal band on the tacho. Keys: <strong className="mono">E</strong> / <strong className="mono">SHIFT</strong>.
-            </li>
-            <li>
-              Shift inside the band and you keep your acceleration. Shift early and the next gear bogs.
-              Bang the limiter and you lose far more.
-            </li>
-            <li>
-              <strong>Brake</strong> with <strong className="mono">S</strong>, downshift with{' '}
-              <strong className="mono">Q</strong> — recovery tools, not race-winners.
-            </li>
-            <li>First car over {RACE_DISTANCE_M} m takes the run.</li>
-          </ul>
+          <h3 className="panel__title">
+            HOW THE {category === 'drag' ? 'DRAG' : 'CIRCUIT'} RACE WORKS
+          </h3>
+          {category === 'drag' ? (
+            <ul className="tick-list">
+              <li>
+                Stage on the line and <strong>hold GAS</strong> to build revs. Aim for{' '}
+                <strong className="mono">{LAUNCH.optimalRpm} RPM</strong>, then release. On a keyboard that is{' '}
+                <strong className="mono">W</strong> or <strong className="mono">SPACE</strong>.
+              </li>
+              <li>
+                Hold GAS through the run. <strong>Upshift</strong> as the needle reaches{' '}
+                <strong className="mono">{DRIVETRAIN.shiftUpRpm.toLocaleString('en-US')} RPM</strong> — the
+                teal band on the tacho. Keys: <strong className="mono">E</strong> / <strong className="mono">SHIFT</strong>.
+              </li>
+              <li>
+                Shift inside the band and you keep your acceleration. Shift early and the next gear bogs.
+                Bang the limiter and you lose far more.
+              </li>
+              <li>
+                <strong>Brake</strong> with <strong className="mono">S</strong>, downshift with{' '}
+                <strong className="mono">Q</strong> — recovery tools, not race-winners.
+              </li>
+              <li>First car over {RACE_DISTANCE_M} m takes the run.</li>
+            </ul>
+          ) : (
+            <ul className="tick-list">
+              <li>
+                No steering. Hold <strong>THROTTLE</strong> (W / ↑) and <strong>BRAKE</strong> (S / ↓ /{' '}
+                SPACE). The tires corner for you.
+              </li>
+              <li>
+                Carry too much speed into a turn and you slide, lock up or spin. Watch the{' '}
+                <strong>GRIP</strong> bar: green is safe, yellow is the limit, red is a slide.
+              </li>
+              <li>
+                <strong>TIRES</strong> raise the cornering budget and <strong>BRAKES</strong> the braking
+                one — both matter more here than on the strip.
+              </li>
+              <li>Lighter builds rotate faster; more aero stays planted in the fast sweepers.</li>
+            </ul>
+          )}
         </section>
 
         <WalletPanel compact />
@@ -486,17 +537,54 @@ export function CustomizeScreen({
   );
 }
 
-/** Read-only showroom for the saved car. No draft, no APPLY. */
+/** Drag / circuit bay switcher, shared by the garage and customize screens. */
+export function GarageBays({
+  category,
+  onChange,
+}: {
+  category: GarageCategory;
+  onChange: (category: GarageCategory) => void;
+}): ReactNode {
+  return (
+    <div className="garage-bays" role="group" aria-label="Garage bay">
+      <button
+        type="button"
+        className={`garage-bay${category === 'drag' ? ' is-active' : ''}`}
+        aria-pressed={category === 'drag'}
+        onClick={() => onChange('drag')}
+      >
+        <span className="garage-bay__name">DRAG CAR</span>
+        <span className="garage-bay__note">300 m strip build</span>
+      </button>
+      <button
+        type="button"
+        className={`garage-bay${category === 'circuit' ? ' is-active' : ''}`}
+        aria-pressed={category === 'circuit'}
+        onClick={() => onChange('circuit')}
+      >
+        <span className="garage-bay__name">CIRCUIT CAR</span>
+        <span className="garage-bay__note">Throttle &amp; brake build</span>
+      </button>
+    </div>
+  );
+}
+
+/** Read-only showroom for a saved bay. No draft, no APPLY. */
 export function GarageScreen({
   profile,
+  category,
+  onCategoryChange,
   onBack,
   onCustomize,
 }: {
   profile: PlayerProfile;
+  category: GarageCategory;
+  onCategoryChange: (category: GarageCategory) => void;
   onBack: () => void;
   onCustomize?: () => void;
 }): ReactNode {
-  const car = profile.car;
+  const car = carForCategory(profile, category);
+  const isCircuit = category === 'circuit';
   const report = calculateCarReport(car);
   const cosmeticKeys = COSMETIC_SLOT_GROUPS.map((entry) => entry.key);
 
@@ -510,7 +598,8 @@ export function GarageScreen({
           <div>
             <h2 className="sheet__title">GARAGE</h2>
             <p className="sheet__sub">
-              {BODY_TYPE_LABEL[car.body.type]} · build {buildScore(car)}/8 · {formatRecord(profile)}
+              {isCircuit ? 'FORMULA' : BODY_TYPE_LABEL[car.body.type]} · build {buildScore(car)}/8 ·{' '}
+              {formatRecord(profile)}
             </p>
           </div>
           {onCustomize ? (
@@ -520,10 +609,14 @@ export function GarageScreen({
           ) : null}
         </header>
 
-        <CarPreview car={car} />
+        <GarageBays category={category} onChange={onCategoryChange} />
+
+        <CarPreview car={car} category={category} />
 
         <section className="panel">
-          <h3 className="panel__title">LUMEN MK-I</h3>
+          <h3 className="panel__title">
+            {isCircuit ? 'CIRCUIT CAR' : 'DRAG CAR'} · LUMEN MK-I
+          </h3>
           <p className="panel__note">{STARTER_CAR.description}</p>
           <StatBars car={car} />
         </section>
@@ -531,10 +624,10 @@ export function GarageScreen({
         <section className="panel">
           <h3 className="panel__title">BUILD</h3>
           <dl className="spec-list">
-            {UPGRADE_CATEGORIES.map((category) => (
-              <div key={category}>
-                <dt>{category.toUpperCase()}</dt>
-                <dd className="mono">LEVEL {car.performance[category]}</dd>
+            {UPGRADE_CATEGORIES.map((entry) => (
+              <div key={entry}>
+                <dt>{entry.toUpperCase()}</dt>
+                <dd className="mono">LEVEL {car.performance[entry]}</dd>
               </div>
             ))}
             <div>
@@ -548,28 +641,47 @@ export function GarageScreen({
           </dl>
         </section>
 
-        <section className="panel">
-          <h3 className="panel__title">COSMETICS</h3>
-          <dl className="spec-list">
-            {cosmeticKeys.map((key) => (
-              <div key={key}>
-                <dt>{COSMETIC_META[key].label}</dt>
-                <dd className="mono">LVL {cosmeticOf(car, key)}</dd>
+        {isCircuit ? (
+          <section className="panel">
+            <h3 className="panel__title">LIVERY</h3>
+            <dl className="spec-list">
+              {COLOR_SLOT_ENTRIES.map(({ slot, label }) => (
+                <div key={slot}>
+                  <dt>{label}</dt>
+                  <dd className="mono">
+                    <span className="swatch-dot" style={{ background: colorOf(car, slot) }} />{' '}
+                    {colorOf(car, slot).toUpperCase()}
+                  </dd>
+                </div>
+              ))}
+            </dl>
+          </section>
+        ) : (
+          <section className="panel">
+            <h3 className="panel__title">COSMETICS</h3>
+            <dl className="spec-list">
+              {cosmeticKeys.map((key) => (
+                <div key={key}>
+                  <dt>{COSMETIC_META[key].label}</dt>
+                  <dd className="mono">LVL {cosmeticOf(car, key)}</dd>
+                </div>
+              ))}
+              <div>
+                <dt>BODY</dt>
+                <dd className="mono">{BODY_TYPE_LABEL[car.body.type].toUpperCase()}</dd>
               </div>
-            ))}
-            <div>
-              <dt>BODY</dt>
-              <dd className="mono">{BODY_TYPE_LABEL[car.body.type].toUpperCase()}</dd>
-            </div>
-          </dl>
-        </section>
+            </dl>
+          </section>
+        )}
       </main>
 
       <aside className="sidebar">
         <section className="panel">
-          <h3 className="panel__title">BODY TYPES</h3>
+          <h3 className="panel__title">{isCircuit ? 'THE FORMULA CHASSIS' : 'BODY TYPES'}</h3>
           <p className="panel__note">
-            {BODY_TYPE_ORDER.map((id) => BODY_TYPE_LABEL[id]).join(' · ')}
+            {isCircuit
+              ? 'A fixed single-seater chassis: paint and setup only, no body or road-car parts.'
+              : BODY_TYPE_ORDER.map((id) => BODY_TYPE_LABEL[id]).join(' · ')}
           </p>
         </section>
         <WalletPanel compact />

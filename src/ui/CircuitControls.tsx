@@ -4,6 +4,7 @@ import type { CircuitControlState, CircuitPhase } from '../game/circuit/types';
 const THROTTLE_KEYS = ['KeyW', 'ArrowUp'];
 const BRAKE_KEYS = ['KeyS', 'ArrowDown', 'Space'];
 const PAUSE_KEYS = ['Escape', 'KeyP'];
+const MAP_KEYS = ['KeyM'];
 
 /**
  * Touch/mouse/keyboard controls for circuit racing.
@@ -23,6 +24,7 @@ export function CircuitControls({
   onPause: () => void;
 }): ReactNode {
   const [pressed, setPressed] = useState({ throttle: false, brake: false });
+  const [mapVisible, setMapVisible] = useState(controls.mapVisible);
 
   // Read inside the long-lived listeners without re-subscribing on
   // every phase change (re-subscribing would clear the held set).
@@ -30,6 +32,16 @@ export function CircuitControls({
   phaseRef.current = phase;
   const pauseRef = useRef(onPause);
   pauseRef.current = onPause;
+
+  const toggleMap = () => {
+    setMapVisible((visible) => {
+      const next = !visible;
+      controls.mapVisible = next;
+      return next;
+    });
+  };
+  const mapRef = useRef(toggleMap);
+  mapRef.current = toggleMap;
 
   const set = (key: 'throttle' | 'brake', value: boolean) => {
     // Pedals only bite once the race is actually running, so a pedal
@@ -73,6 +85,11 @@ export function CircuitControls({
       if (PAUSE_KEYS.includes(event.code)) {
         event.preventDefault();
         pauseRef.current();
+        return;
+      }
+      if (MAP_KEYS.includes(event.code)) {
+        event.preventDefault();
+        mapRef.current();
         return;
       }
       if (THROTTLE_KEYS.includes(event.code) || BRAKE_KEYS.includes(event.code)) {
@@ -155,6 +172,15 @@ export function CircuitControls({
         >
           <span className="pedal__label">PAUSE</span>
           <span className="pedal__hint">ESC / P</span>
+        </button>
+        <button
+          type="button"
+          className={`pedal pedal--shift${mapVisible ? ' is-pressed' : ''}`}
+          onClick={toggleMap}
+          disabled={phase === 'finished'}
+        >
+          <span className="pedal__label">MAP {mapVisible ? 'ON' : 'OFF'}</span>
+          <span className="pedal__hint">M</span>
         </button>
       </div>
     </div>

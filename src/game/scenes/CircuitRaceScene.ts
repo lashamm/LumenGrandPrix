@@ -1,7 +1,7 @@
 import Phaser from 'phaser';
 import { CIRCUIT, PHASER, SCENE_KEYS } from '../config';
 import type { HudPalette } from '../../theme/theme';
-import { generateCircuit } from '../circuit/circuitGenerator';
+import { resolveCircuit } from '../circuit/handcraftedTracks';
 import {
   computeTrackLayout,
   paintMinimap,
@@ -10,7 +10,12 @@ import {
   type TrackLayout,
 } from '../circuit/trackArt';
 import { CircuitRaceModel } from '../circuit/raceModel';
-import { carWorldPosition, circuitPointAt, safeCornerSpeed } from '../circuit/vehiclePhysics';
+import {
+  carWorldPosition,
+  circuitPointAt,
+  safeCornerSpeed,
+  wrapAngle,
+} from '../circuit/vehiclePhysics';
 import {
   CIRCUIT_CAR_LENGTH_M,
   CIRCUIT_CAR_ROWS,
@@ -42,6 +47,10 @@ const AI_LEVELS: UpgradeLevels = {
 
 const MINIMAP_W = 148;
 const MINIMAP_H = 110;
+/** Height of the top HUD bar, so the minimap clears it. */
+const TOP_BAR_H = 30;
+/** Screen-pixel inset from the canvas edge (mobile notch / rounded corners). */
+const SAFE_INSET = 8;
 
 /** Seconds a tire mark stays on the asphalt. */
 const MARK_LIFE_S = 4;
@@ -53,6 +62,36 @@ const MAX_DUST = 140;
 const CAMERA_LOOK_BASE = 6;
 const CAMERA_LOOK_PER_MPS = 0.25;
 const CAMERA_LOOK_MAX = 18;
+
+/**
+ * The simulation is stepped at a fixed 1/60 s regardless of the
+ * display frame rate, and the current frame carries the leftover
+ * fraction as an interpolation factor. That keeps the race
+ * deterministic and reproducible while the visuals stay smooth at
+ * any refresh rate and never run in slow motion when the tab dips.
+ */
+const FIXED_DT = 1 / 60;
+/** Longest wall-clock chunk fed into the accumulator (tab-switch shield). */
+const MAX_FRAME_S = 0.25;
+/** Hard cap on physics steps per rendered frame. */
+const MAX_STEPS = 15;
+
+/** Recompute live standings at most this often. */
+const STANDINGS_INTERVAL_S = 0.25;
+/** Recompute the brake warning at most this often. */
+const WARNING_INTERVAL_S = 0.12;
+
+interface PrevCarState {
+  s: number;
+  lat: number;
+  heading: number;
+}
+
+interface InterpolatedCar {
+  s: number;
+  lat: number;
+  heading: number;
+}
 
 export interface CircuitSceneData {
   setup: CircuitRaceSetup;
@@ -101,6 +140,11 @@ function formatRaceTime(seconds: number): string {
   return `${minutes}:${secs.toFixed(2).padStart(5, '0')}`;
 }
 
+/** Shortest-arc lerp between two angles. */
+function lerpAngle(from: number, to: number, t: number): number {
+  return from + wrapAngle(to - from) * t;
+}
+
 /**
  * The circuit race scene.
  *
@@ -125,6 +169,11 @@ export class CircuitRaceScene extends Phaser.Scene {
   private marksGraphics!: Phaser.GameObjects.Graphics;
   private dustGraphics!: Phaser.GameObjects.Graphics;
   private minimapDots!: Phaser.GameObjects.Graphics;
+  private minimapBorder!: Phaser.GameObjects.Rectangle;
+  private minimapMap!: Phaser.GameObjects.Image;
+  private minimapVisible = true;
+  private playerMarker!: Phaser.GameObjects.Graphics;
+  private trackImageObj!: Phaser.GameObjects.Image;
 
   private lapText!: Phaser.GameObjects.Text;
   private posText!: Phaser.GameObjects.Text;
@@ -138,9 +187,33 @@ export class CircuitRaceScene extends Phaser.Scene {
   private warnText!: Phaser.GameObjects.Text;
   private countdownText!: Phaser.GameObjects.Text;
 
+  /**
+   * The world camera carries the 5.5x race zoom; the UI camera
+   * stays at 1x so HUD text, the minimap and the countdown are
+   * always screen-pixel sized and pinned. `scrollFactor(0)` alone
+   * would still be scaled by the zoom, which is why everything
+   * looked huge and off-centre before.
+   */
+  private uiCamera!: Phaser.Cameras.Scene2D.Camera;
+  private hudObjects: Phaser.GameObjects.GameObject[] = [];
+  private worldObjects: Phaser.GameObjects.GameObject[] = [];
+
   private countdownStep = -1;
   private elapsed = 0;
   private reported = false;
+
+  private timeAccum = 0;
+  private alpha = 0;
+  private prevStates: PrevCarState[] = [];
+
+  private standingPos = 0;
+  private standingTotal = 0;
+  private standingAt = -10;
+  private prevPhase: CircuitPhase = 'countdown';
+  private warnCache = { active: false, severity: 0, category: 'warn' as 'warn' | 'danger' };
+  private warnAt = -10;
+  private cachedLapLength = 0;
+  private cachedLastBest = { last: '' as string | null, best: '' as string | null };
 
   constructor() {
     super({ key: SCENE_KEYS.circuit });
@@ -148,12 +221,13 @@ export class CircuitRaceScene extends Phaser.Scene {
 
   init(data: CircuitSceneData): void {
     this.payload = data;
-    this.circuit = generateCircuit(data.setup.seed);
+    this.circuit = resolveCircuit(data.setup.trackId, data.setup.seed);
   }
 
   create(): void {
     this.cameras.main.setZoom(CIRCUIT.camZoom);
     this.cameras.main.setBackgroundColor(PHASER.backgroundColor);
+    this.uiCamera = this.cameras.add(0, 0, PHASER.width, PHASER.height);
 
     this.trackLayout = computeTrackLayout(this.circuit);
     this.paintTrackTexture();
@@ -167,9 +241,14 @@ export class CircuitRaceScene extends Phaser.Scene {
     this.buildCars();
 
     this.marksGraphics = this.add.graphics().setDepth(30);
+    this.worldObjects.push(this.marksGraphics);
     this.dustGraphics = this.add.graphics().setDepth(29);
-    this.minimapDots = this.add.graphics().setDepth(26);
-    this.minimapDots.setScrollFactor(0);
+    this.worldObjects.push(this.dustGraphics);
+    // Player indicator sits above every car (car depths grow with world Y).
+    this.playerMarker = this.add.graphics().setDepth(200);
+    this.worldObjects.push(this.playerMarker);
+    this.minimapDots = this.add.graphics().setDepth(26).setScrollFactor(0);
+    this.hudObjects.push(this.minimapDots);
 
     this.buildHud();
     this.buildCountdown();
@@ -181,6 +260,11 @@ export class CircuitRaceScene extends Phaser.Scene {
       seed: this.payload.setup.seed,
       difficulty: this.payload.setup.difficulty,
     });
+    this.prevPhase = this.model.phase;
+
+    // The HUD belongs to the 1x UI camera, the world to the zoomed camera.
+    this.cameras.main.ignore(this.hudObjects);
+    this.uiCamera.ignore(this.worldObjects);
 
     this.payload.onPhaseChange('countdown');
   }
@@ -203,7 +287,7 @@ export class CircuitRaceScene extends Phaser.Scene {
 
   private trackImage(): void {
     const { width, height, pxPerM, originX, originY } = this.trackLayout;
-    this.add
+    this.trackImageObj = this.add
       .image(
         originX + width / (2 * pxPerM),
         originY + height / (2 * pxPerM),
@@ -211,6 +295,7 @@ export class CircuitRaceScene extends Phaser.Scene {
       )
       .setScale(1 / pxPerM)
       .setDepth(1);
+    this.worldObjects.push(this.trackImageObj);
   }
 
   private paintMinimapTexture(): void {
@@ -227,10 +312,10 @@ export class CircuitRaceScene extends Phaser.Scene {
     texture.refresh();
 
     this.minimapOrigin = {
-      x: PHASER.width - MINIMAP_W - 6,
-      y: 6,
+      x: PHASER.width - MINIMAP_W - SAFE_INSET,
+      y: TOP_BAR_H + SAFE_INSET,
     };
-    this.add
+    const border = this.add
       .rectangle(
         this.minimapOrigin.x - 3,
         this.minimapOrigin.y - 3,
@@ -241,11 +326,14 @@ export class CircuitRaceScene extends Phaser.Scene {
       .setOrigin(0, 0)
       .setScrollFactor(0)
       .setDepth(25);
-    this.add
+    const map = this.add
       .image(this.minimapOrigin.x, this.minimapOrigin.y, key)
       .setOrigin(0, 0)
       .setScrollFactor(0)
       .setDepth(25);
+    this.minimapBorder = border;
+    this.minimapMap = map;
+    this.hudObjects.push(border, map);
   }
 
   /** Formula sprite per car, painted from its own colours. */
@@ -320,10 +408,12 @@ export class CircuitRaceScene extends Phaser.Scene {
         : aiColors(spec.color);
       const key = `circuit-car-${index}`;
       this.paintCarTexture(key, colors);
-      return this.add
+      const image = this.add
         .image(0, 0, key)
         .setScale(carScale)
         .setDepth(10);
+      this.worldObjects.push(image);
+      return image;
     });
   }
 
@@ -332,16 +422,17 @@ export class CircuitRaceScene extends Phaser.Scene {
     const cssColour = css;
 
     // Top bar.
-    this.add
+    const bar = this.add
       .rectangle(0, 0, PHASER.width, 30, palette.background)
       .setOrigin(0, 0)
       .setScrollFactor(0)
       .setDepth(20);
-    this.add
+    const barLine = this.add
       .rectangle(0, 30, PHASER.width, 2, palette.line)
       .setOrigin(0, 0)
       .setScrollFactor(0)
       .setDepth(21);
+    this.hudObjects.push(bar, barLine);
 
     this.lapText = this.add
       .text(10, 7, 'LAP 1/3', { fontFamily: FONT, fontSize: '11px', color: cssColour(palette.text) })
@@ -353,6 +444,7 @@ export class CircuitRaceScene extends Phaser.Scene {
       .setOrigin(0, 0)
       .setScrollFactor(0)
       .setDepth(22);
+    this.hudObjects.push(this.lapText, this.posText);
 
     this.timeText = this.add
       .text(PHASER.width / 2, 4, '0:00.00', { fontFamily: FONT, fontSize: '15px', color: cssColour(palette.text) })
@@ -364,6 +456,7 @@ export class CircuitRaceScene extends Phaser.Scene {
       .setOrigin(0.5, 0)
       .setScrollFactor(0)
       .setDepth(22);
+    this.hudObjects.push(this.timeText, this.splitText);
 
     // Speed, bottom left.
     this.speedText = this.add
@@ -371,34 +464,40 @@ export class CircuitRaceScene extends Phaser.Scene {
       .setOrigin(0, 0)
       .setScrollFactor(0)
       .setDepth(22);
-    this.add
+    const kmh = this.add
       .text(16, 258, 'KM/H', { fontFamily: FONT, fontSize: '8px', color: cssColour(palette.faint) })
       .setOrigin(0, 0)
       .setScrollFactor(0)
       .setDepth(22);
+    this.hudObjects.push(this.speedText, kmh);
 
     // Pedal and grip bars, bottom right.
     const barX = 352;
-    this.add.text(barX, 232, 'THR', { fontFamily: FONT, fontSize: '7px', color: cssColour(palette.faint) })
+    const thrLabel = this.add.text(barX, 232, 'THR', { fontFamily: FONT, fontSize: '7px', color: cssColour(palette.faint) })
       .setOrigin(0, 0)
       .setScrollFactor(0)
       .setDepth(22);
-    this.add.rectangle(barX + 26, 233, 80, 5, palette.line).setOrigin(0, 0).setScrollFactor(0).setDepth(22);
+    const thrTrack = this.add.rectangle(barX + 26, 233, 80, 5, palette.line).setOrigin(0, 0).setScrollFactor(0).setDepth(22);
     this.thrFill = this.add.rectangle(barX + 26, 233, 0, 5, palette.success).setOrigin(0, 0).setScrollFactor(0).setDepth(23);
 
-    this.add.text(barX, 240, 'BRK', { fontFamily: FONT, fontSize: '7px', color: cssColour(palette.faint) })
+    const brkLabel = this.add.text(barX, 240, 'BRK', { fontFamily: FONT, fontSize: '7px', color: cssColour(palette.faint) })
       .setOrigin(0, 0)
       .setScrollFactor(0)
       .setDepth(22);
-    this.add.rectangle(barX + 26, 241, 80, 5, palette.line).setOrigin(0, 0).setScrollFactor(0).setDepth(22);
+    const brkTrack = this.add.rectangle(barX + 26, 241, 80, 5, palette.line).setOrigin(0, 0).setScrollFactor(0).setDepth(22);
     this.brkFill = this.add.rectangle(barX + 26, 241, 0, 5, palette.danger).setOrigin(0, 0).setScrollFactor(0).setDepth(23);
 
-    this.add.text(barX, 250, 'GRIP', { fontFamily: FONT, fontSize: '7px', color: cssColour(palette.faint) })
+    const gripLabel = this.add.text(barX, 250, 'GRIP', { fontFamily: FONT, fontSize: '7px', color: cssColour(palette.faint) })
       .setOrigin(0, 0)
       .setScrollFactor(0)
       .setDepth(22);
-    this.add.rectangle(barX + 26, 251, 80, 7, palette.line).setOrigin(0, 0).setScrollFactor(0).setDepth(22);
+    const gripTrack = this.add.rectangle(barX + 26, 251, 80, 7, palette.line).setOrigin(0, 0).setScrollFactor(0).setDepth(22);
     this.gripFill = this.add.rectangle(barX + 26, 251, 0, 7, palette.success).setOrigin(0, 0).setScrollFactor(0).setDepth(23);
+    this.hudObjects.push(
+      thrLabel, thrTrack, this.thrFill,
+      brkLabel, brkTrack, this.brkFill,
+      gripLabel, gripTrack, this.gripFill,
+    );
 
     // Banners and the corner warning.
     this.bannerText = this.add
@@ -411,43 +510,106 @@ export class CircuitRaceScene extends Phaser.Scene {
       .setOrigin(0.5, 0.5)
       .setScrollFactor(0)
       .setDepth(27);
+    this.hudObjects.push(this.bannerText, this.warnText);
   }
 
   private buildCountdown(): void {
+    // Dead centre of the viewport; the UI camera keeps it pinned there.
     this.countdownText = this.add
-      .text(PHASER.width / 2, 118, '', { fontFamily: FONT, fontSize: '44px', color: css(this.payload.palette.text) })
+      .text(PHASER.width / 2, PHASER.height / 2, '', { fontFamily: FONT, fontSize: '44px', color: css(this.payload.palette.text) })
       .setOrigin(0.5, 0.5)
       .setScrollFactor(0)
       .setDepth(40);
+    this.hudObjects.push(this.countdownText);
   }
 
   // ---------------------------------------------------------------- loop --
 
   override update(_time: number, delta: number): void {
-    const dt = Math.min(delta / 1000, 1 / 20);
-    this.elapsed += dt;
+    const frameSec = Math.min(delta / 1000, MAX_FRAME_S);
+    this.elapsed += frameSec;
 
     if (!this.payload.pauseState.paused) {
-      const prevPhase = this.model.phase;
-      this.model.update(dt, {
-        throttle: this.payload.controls.throttle,
-        brake: this.payload.controls.brake,
-      });
-      if (this.model.phase !== prevPhase) {
-        this.payload.onPhaseChange(this.model.phase);
-        if (this.model.phase === 'racing') {
-          this.flashBanner('GO!', this.payload.palette.accent);
-        }
+      // Fixed-step simulation with an interpolation remainder. Frames are
+      // clamped so a long tab-switch hiccup can't spiral into a run-away
+      // catch-up and a permanent slide into slow motion.
+      this.timeAccum = Math.min(
+        this.timeAccum + frameSec,
+        FIXED_DT * MAX_STEPS,
+      );
+      let guard = MAX_STEPS;
+      while (guard > 0 && this.timeAccum >= FIXED_DT) {
+        this.stepSimulation(FIXED_DT);
+        this.timeAccum -= FIXED_DT;
+        guard -= 1;
       }
-      if (this.model.phase === 'finished' && !this.reported) {
-        this.reported = true;
-        this.payload.onComplete(this.model.result());
-      }
-      this.updateEffects(dt);
+      if (guard <= 0) this.timeAccum = 0;
+      this.updateEffects(frameSec);
+    } else {
+      // Do not bank simulated time while paused, or unpausing would
+      // fire a burst of catch-up steps.
+      this.timeAccum = 0;
+    }
+
+    this.alpha = Math.min(1, this.timeAccum / FIXED_DT);
+
+    // The overlay owns the map toggle; the scene just obeys it.
+    const showMap = this.payload.controls.mapVisible;
+    if (showMap !== this.minimapVisible) {
+      this.minimapVisible = showMap;
+      this.minimapBorder.setVisible(showMap);
+      this.minimapMap.setVisible(showMap);
+      this.minimapDots.setVisible(showMap);
     }
 
     this.renderWorld();
     this.renderHud();
+  }
+
+  /** Advances the deterministic race model by exactly one fixed step. */
+  private stepSimulation(dt: number): void {
+    this.capturePrevStates();
+    const prevPhase = this.model.phase;
+    this.model.update(dt, {
+      throttle: this.payload.controls.throttle,
+      brake: this.payload.controls.brake,
+    });
+    if (this.model.phase !== prevPhase) {
+      this.payload.onPhaseChange(this.model.phase);
+      if (this.model.phase === 'racing') {
+        this.flashBanner('GO!', this.payload.palette.accent);
+      }
+    }
+    if (this.model.phase === 'finished' && !this.reported) {
+      this.reported = true;
+      this.payload.onComplete(this.model.result());
+    }
+  }
+
+  private capturePrevStates(): void {
+    for (let index = 0; index < this.model.cars.length; index += 1) {
+      const state = this.model.cars[index].state;
+      const prev = this.prevStates[index] ?? (this.prevStates[index] = { s: 0, lat: 0, heading: 0 });
+      prev.s = state.s;
+      prev.lat = state.lat;
+      prev.heading = state.heading;
+    }
+  }
+
+  /**
+   * Renders between the pre-step snapshot and the post-step state so the
+   * car moves continuously at any refresh rate instead of snagging on
+   * each 1/60 s physics tick.
+   */
+  private interpolatedCar(index: number): InterpolatedCar {
+    const prev = this.prevStates[index];
+    const state = this.model.cars[index].state;
+    if (!prev) return { s: state.s, lat: state.lat, heading: state.heading };
+    return {
+      s: prev.s + (state.s - prev.s) * this.alpha,
+      lat: prev.lat + (state.lat - prev.lat) * this.alpha,
+      heading: lerpAngle(prev.heading, state.heading, this.alpha),
+    };
   }
 
   // -------------------------------------------------------------- effects --
@@ -506,16 +668,16 @@ export class CircuitRaceScene extends Phaser.Scene {
   // ---------------------------------------------------------------- render --
 
   private renderWorld(): void {
-    const player = this.model.cars[this.model.playerIndex];
-    const state = player.state;
+    const playerIndex = this.model.playerIndex;
+    const playerView = this.interpolatedCar(playerIndex);
 
     // Follow camera with a speed-dependent lookahead,
     // clamped so the view never leaves the circuit.
-    const position = carWorldPosition(this.circuit, state.s, state.lat);
-    const point = circuitPointAt(this.circuit, state.s);
+    const position = carWorldPosition(this.circuit, playerView.s, playerView.lat);
+    const point = circuitPointAt(this.circuit, playerView.s);
     const look = Math.min(
       CAMERA_LOOK_MAX,
-      CAMERA_LOOK_BASE + state.v * CAMERA_LOOK_PER_MPS,
+      CAMERA_LOOK_BASE + (this.model.cars[playerIndex].state.v) * CAMERA_LOOK_PER_MPS,
     );
     const viewW = PHASER.width / CIRCUIT.camZoom;
     const viewH = PHASER.height / CIRCUIT.camZoom;
@@ -530,17 +692,20 @@ export class CircuitRaceScene extends Phaser.Scene {
 
     // Cars, depth-sorted by world Y so lower cars draw on top.
     for (let index = 0; index < this.model.cars.length; index += 1) {
-      const car = this.model.cars[index];
-      const carState = car.state;
-      const carPosition = carWorldPosition(this.circuit, carState.s, carState.lat);
+      const view = this.interpolatedCar(index);
+      const carPosition = carWorldPosition(this.circuit, view.s, view.lat);
       const image = this.carImages[index];
       image.x = carPosition.x;
       image.y = carPosition.y;
-      image.setAngle((carState.heading * 180) / Math.PI);
+      image.setAngle((view.heading * 180) / Math.PI);
       image.setDepth(
         10 + Math.round((carPosition.y - this.circuit.bounds.minY) / 8),
       );
     }
+
+    // Player indicator: a bobbing chevron hovering over the player's car
+    // so it reads instantly among the near-identical AI field.
+    this.drawPlayerMarker(position.x, position.y);
 
     // Tire marks: rotated quads drawn as triangle pairs —
     // Phaser's Graphics has no transform stack.
@@ -572,12 +737,12 @@ export class CircuitRaceScene extends Phaser.Scene {
       dust.fillCircle(puff.x, puff.y, 0.5 + growth * 0.9);
     }
 
-    // Minimap dots.
+    // Minimap dots (UI space, driven by interpolated world positions).
     const dots = this.minimapDots;
     dots.clear();
     for (let index = 0; index < this.model.cars.length; index += 1) {
-      const car = this.model.cars[index];
-      const carPosition = carWorldPosition(this.circuit, car.state.s, car.state.lat);
+      const view = this.interpolatedCar(index);
+      const carPosition = carWorldPosition(this.circuit, view.s, view.lat);
       const dot = this.minimap.toPx(carPosition.x, carPosition.y);
       const isPlayer = this.model.specs[index].isPlayer;
       const colour = isPlayer
@@ -600,23 +765,73 @@ export class CircuitRaceScene extends Phaser.Scene {
     }
   }
 
+  /**
+   * A downward chevron floating above the player's car.
+   *
+   * Drawn in world space (so it tracks the car exactly) but at a fixed
+   * world offset, independent of the car's heading — the camera never
+   * rotates, so "up on screen" is always a stable place to look. A slow
+   * bob and a dark outline keep it legible against asphalt and paint.
+   */
+  private drawPlayerMarker(x: number, y: number): void {
+    const marker = this.playerMarker;
+    marker.clear();
+    const palette = this.payload.palette;
+    const bob = Math.sin(this.elapsed * 6) * 0.45;
+    const tipY = y - 3.1 - bob;
+    const halfW = 1.5;
+    const height = 1.9;
+    const outline = 0.35;
+    marker.fillStyle(palette.background, 0.85);
+    marker.fillTriangle(
+      x - halfW - outline,
+      tipY - height - outline,
+      x + halfW + outline,
+      tipY - height - outline,
+      x,
+      tipY + outline,
+    );
+    marker.fillStyle(palette.accent, 1);
+    marker.fillTriangle(x - halfW, tipY - height, x + halfW, tipY - height, x, tipY);
+  }
+
   private renderHud(): void {
     const palette = this.payload.palette;
     const player = this.model.cars[this.model.playerIndex];
     const state = player.state;
-    const standings = this.model.standings();
-    const playerStanding = standings.find((standing) => standing.isPlayer);
+    const phase = this.model.phase;
+
+    // Standings are sorted, so recompute them sparingly.
+    if (phase !== this.prevPhase) {
+      this.prevPhase = phase;
+      this.standingAt = -10;
+      this.cachedLapLength = 0;
+      this.cachedLastBest = { last: null, best: null };
+    }
+    if (this.elapsed - this.standingAt >= STANDINGS_INTERVAL_S) {
+      this.standingAt = this.elapsed;
+      const standings = this.model.standings();
+      this.standingTotal = standings.length;
+      const playerStanding = standings.find((standing) => standing.isPlayer);
+      this.standingPos = playerStanding?.position ?? standings.length;
+    }
 
     this.lapText.setText(
       `LAP ${Math.min(Math.max(state.lap, 1), this.model.totalLaps)}/${this.model.totalLaps}`,
     );
-    this.posText.setText(`POS ${playerStanding?.position ?? '—'}/${standings.length}`);
+    this.posText.setText(`POS ${this.standingPos}/${this.standingTotal}`);
     this.timeText.setText(formatRaceTime(this.model.raceTime));
 
-    const lastLap = state.lapTimes.length > 0 ? state.lapTimes[state.lapTimes.length - 1] : null;
-    const bestLap = state.lapTimes.length > 0 ? Math.min(...state.lapTimes) : null;
+    const lapLength = state.lapTimes.length;
+    if (lapLength !== this.cachedLapLength) {
+      this.cachedLapLength = lapLength;
+      this.cachedLastBest = {
+        last: lapLength > 0 ? formatRaceTime(state.lapTimes[lapLength - 1]) : null,
+        best: lapLength > 0 ? formatRaceTime(Math.min(...state.lapTimes)) : null,
+      };
+    }
     this.splitText.setText(
-      `${lastLap !== null ? `LAST ${formatRaceTime(lastLap)}` : 'LAST —'}   ${bestLap !== null ? `BEST ${formatRaceTime(bestLap)}` : 'BEST —'}`,
+      `${this.cachedLastBest.last !== null ? `LAST ${this.cachedLastBest.last}` : 'LAST —'}   ${this.cachedLastBest.best !== null ? `BEST ${this.cachedLastBest.best}` : 'BEST —'}`,
     );
     this.speedText.setText(String(Math.round(state.v * 3.6)));
 
@@ -657,19 +872,25 @@ export class CircuitRaceScene extends Phaser.Scene {
 
     // Braking-point warning: the slowest corner inside the
     // braking window is reachable slower than the car runs.
-    const warning = this.cornerWarning();
-    if (warning.active) {
+    if (this.elapsed - this.warnAt >= WARNING_INTERVAL_S) {
+      this.warnAt = this.elapsed;
+      const warning = this.cornerWarning();
+      this.warnCache = {
+        active: warning.active,
+        severity: warning.severity,
+        category: warning.severity > 10 ? 'danger' : 'warn',
+      };
+    }
+    if (this.warnCache.active) {
       this.warnText.setText('▼ BRAKE');
-      this.warnText.setColor(
-        css(warning.severity > 10 ? palette.danger : palette.warn),
-      );
+      this.warnText.setColor(css(this.warnCache.category === 'danger' ? palette.danger : palette.warn));
       this.warnText.setAlpha(0.6 + 0.4 * Math.sin(this.elapsed * 10));
     } else {
       this.warnText.setText('');
     }
 
     // Countdown.
-    if (this.model.phase === 'countdown') {
+    if (phase === 'countdown') {
       const step = this.model.countdownStep;
       if (step !== this.countdownStep) {
         this.countdownStep = step;

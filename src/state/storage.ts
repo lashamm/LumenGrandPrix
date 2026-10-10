@@ -15,8 +15,10 @@ const STORAGE_KEY = 'lumengp.profile.v1';
 export interface PlayerProfile {
   /** Schema version of this object. Mirrors `car.version`. */
   version: number;
-  /** The single source of truth for the player's car. */
+  /** The drag-strip car. The single source of truth for the 300 m build. */
   car: CarCustomization;
+  /** The circuit car. Kept separate so tuning one never touches the other. */
+  circuitCar: CarCustomization;
   /** Best 300 m time in seconds, or null if never finished. */
   bestTime: number | null;
   /** Best single circuit lap in seconds, or null if never set. */
@@ -32,9 +34,17 @@ export interface PlayerProfile {
   lastEntrySol: number | null;
 }
 
+/** The two bays of the garage. */
+export type GarageCategory = 'drag' | 'circuit';
+
+export function carForCategory(profile: PlayerProfile, category: GarageCategory): CarCustomization {
+  return category === 'drag' ? profile.car : profile.circuitCar;
+}
+
 export const DEFAULT_PROFILE: PlayerProfile = {
   version: CAR_SCHEMA_VERSION,
   car: cloneCar(DEFAULT_CAR),
+  circuitCar: cloneCar(DEFAULT_CAR),
   bestTime: null,
   circuitBestLap: null,
   races: 0,
@@ -68,6 +78,7 @@ export function loadProfile(): PlayerProfile {
     return {
       version: CAR_SCHEMA_VERSION,
       car: readCar(record),
+      circuitCar: readCircuitCar(record),
       bestTime:
         typeof record.bestTime === 'number' && Number.isFinite(record.bestTime) && record.bestTime > 0
           ? record.bestTime
@@ -106,15 +117,30 @@ function readCar(record: Record<string, unknown>): CarCustomization {
   return cloneCar(DEFAULT_CAR);
 }
 
+/**
+ * Reads the circuit car.
+ *
+ * Saves written before the two-car garage have no `circuitCar`, so the
+ * drag car (or the migrated legacy build) is cloned into the circuit
+ * bay. That way an existing player keeps their build and simply starts
+ * tuning the second car from there.
+ */
+function readCircuitCar(record: Record<string, unknown>): CarCustomization {
+  if (record.circuitCar !== undefined) return sanitizeCar(record.circuitCar);
+  return cloneCar(readCar(record));
+}
+
 export function saveProfile(profile: PlayerProfile): void {
   if (typeof localStorage === 'undefined') return;
   try {
-    const { car, bestTime, circuitBestLap, races, wins, difficulty, network, mode, lastEntrySol } = profile;
+    const { car, circuitCar, bestTime, circuitBestLap, races, wins, difficulty, network, mode, lastEntrySol } =
+      profile;
     localStorage.setItem(
       STORAGE_KEY,
       JSON.stringify({
         version: CAR_SCHEMA_VERSION,
         car,
+        circuitCar,
         bestTime,
         circuitBestLap,
         races,
@@ -131,5 +157,5 @@ export function saveProfile(profile: PlayerProfile): void {
 }
 
 function cloneProfile(profile: PlayerProfile): PlayerProfile {
-  return { ...profile, car: cloneCar(profile.car) };
+  return { ...profile, car: cloneCar(profile.car), circuitCar: cloneCar(profile.circuitCar) };
 }

@@ -17,7 +17,7 @@ type Screen = 'setup' | 'circuit-setup' | 'customize' | 'garage' | 'wallet' | 's
 const MENU_ITEMS: ReadonlyArray<{ id: string; label: string; blurb: string; target: Screen }> = [
   {
     id: 'play',
-    label: 'RACE',
+    label: 'DRAG RACE',
     blurb: `Pick a mode, an entry, then stage on the ${RACE_LENGTH} m strip.`,
     target: 'setup',
   },

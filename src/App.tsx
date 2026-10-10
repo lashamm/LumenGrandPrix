@@ -7,7 +7,7 @@ import { WalletPanel } from './ui/WalletPanel';
 import { SettingsScreen } from './ui/SettingsScreen';
 import { NetworkProvider, useNetwork } from './network/NetworkProvider';
 import { NetworkBadge, NetworkDialog } from './ui/NetworkIndicator';
-import { loadProfile, saveProfile, type PlayerProfile } from './state/storage';
+import { loadProfile, saveProfile, type GarageCategory, type PlayerProfile } from './state/storage';
 import { BODY_TYPE_LABEL } from './game/car/cosmetics';
 import {
   type AiDifficulty,
@@ -51,19 +51,37 @@ export function App() {
   const [profile, setProfile] = useState<PlayerProfile>(() => loadProfile());
   const [setup, setSetup] = useState<RaceSetup | null>(null);
   const [circuitSetup, setCircuitSetup] = useState<CircuitRaceSetup | null>(null);
+  const [garageCategory, setGarageCategory] = useState<GarageCategory>('drag');
+  const [garageReturn, setGarageReturn] = useState<Screen>('menu');
 
   useEffect(() => {
     saveProfile(profile);
   }, [profile]);
 
   /**
-   * The only write path into the stored car.
+   * The only write path into a stored car.
    *
    * The garage edits a draft and calls this once, on Apply — so a half-finished
-   * session can never be persisted by accident.
+   * session can never be persisted by accident. The write lands in whichever
+   * bay (drag or circuit) the player is currently editing.
    */
-  const setCar = useCallback((car: CarCustomization) => {
-    setProfile((previous) => ({ ...previous, car }));
+  const setCar = useCallback(
+    (category: GarageCategory, car: CarCustomization) => {
+      setProfile((previous) =>
+        category === 'drag' ? { ...previous, car } : { ...previous, circuitCar: car },
+      );
+    },
+    [],
+  );
+
+  /**
+   * Opens the garage on a chosen bay and remembers where to come back to,
+   * so tuning the circuit car from track select returns there afterwards.
+   */
+  const openGarage = useCallback((category: GarageCategory, next: Screen, returnTo: Screen = 'menu') => {
+    setGarageCategory(category);
+    setGarageReturn(returnTo);
+    setScreen(next);
   }, []);
 
   const setDifficulty = useCallback((difficulty: AiDifficulty) => {
@@ -125,7 +143,11 @@ export function App() {
         setSetup={setSetup}
         circuitSetup={circuitSetup}
         setCircuitSetup={setCircuitSetup}
+        garageCategory={garageCategory}
+        setGarageCategory={setGarageCategory}
+        garageReturn={garageReturn}
         setCar={setCar}
+        openGarage={openGarage}
         setDifficulty={setDifficulty}
         setMode={setMode}
         recordResult={recordResult}
@@ -143,7 +165,11 @@ function AppBody({
   setSetup,
   circuitSetup,
   setCircuitSetup,
+  garageCategory,
+  setGarageCategory,
+  garageReturn,
   setCar,
+  openGarage,
   setDifficulty,
   setMode,
   recordResult,
@@ -156,7 +182,11 @@ function AppBody({
   setSetup: (next: RaceSetup | null) => void;
   circuitSetup: CircuitRaceSetup | null;
   setCircuitSetup: (next: CircuitRaceSetup | null) => void;
-  setCar: (car: CarCustomization) => void;
+  garageCategory: GarageCategory;
+  setGarageCategory: (category: GarageCategory) => void;
+  garageReturn: Screen;
+  setCar: (category: GarageCategory, car: CarCustomization) => void;
+  openGarage: (category: GarageCategory, next: Screen, returnTo?: Screen) => void;
   setDifficulty: (difficulty: AiDifficulty) => void;
   setMode: (mode: RaceMode) => void;
   recordResult: (result: RaceResult, settlement: Settlement | null) => void;
@@ -182,19 +212,25 @@ function AppBody({
     case 'customize':
       return (
         <CustomizeScreen
+          key={garageCategory}
           profile={profile}
+          category={garageCategory}
+          onCategoryChange={setGarageCategory}
           onApply={setCar}
           onDifficulty={setDifficulty}
-          onPlay={() => setScreen('setup')}
-          onBack={() => setScreen('menu')}
+          onPlay={() => setScreen(garageCategory === 'drag' ? 'setup' : 'circuit-setup')}
+          onBack={() => setScreen(garageReturn)}
         />
       );
 
     case 'garage':
       return (
         <GarageScreen
+          key={garageCategory}
           profile={profile}
-          onBack={() => setScreen('menu')}
+          category={garageCategory}
+          onCategoryChange={setGarageCategory}
+          onBack={() => setScreen(garageReturn)}
           onCustomize={() => setScreen('customize')}
         />
       );
@@ -254,7 +290,7 @@ function AppBody({
         <CircuitSetupScreen
           profile={profile}
           onBack={() => setScreen('menu')}
-          onCustomize={() => setScreen('customize')}
+          onCustomize={() => openGarage('circuit', 'customize', 'circuit-setup')}
           onStart={(next) => {
             setCircuitSetup(next);
             setScreen('circuit-race');
@@ -286,7 +322,11 @@ function AppBody({
         <MainMenu
           profile={profile}
           onNavigate={(next) => {
-            setScreen(next);
+            if (next === 'customize' || next === 'garage') {
+              openGarage('drag', next, 'menu');
+            } else {
+              setScreen(next);
+            }
           }}
         />
       );

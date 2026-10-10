@@ -21,11 +21,11 @@ export const CIRCUIT_CAR_WIDTH_M = 2.4;
  * The sprite grid.
  *
  * `o` outline · `b` primary body · `s` secondary sidepods ·
- * `H` helmet · `w` cockpit · `d` tire · `r` nose tip
+ * `H` helmet · `w` cockpit · `d` tire · `r` rim / nose tip
  */
 export const CIRCUIT_CAR_ROWS: ReadonlyArray<string> = [
   'ooo..................ooo',
-  'oooddd...........ddd.ooo',
+  'ooodrd...........drd.ooo',
   'obbddd...........dddbb.o',
   'osssssssssss.........ooo',
   'obbbbbbbbbbbbbbb.....ooo',
@@ -34,15 +34,21 @@ export const CIRCUIT_CAR_ROWS: ReadonlyArray<string> = [
   'obbbbbbbbbbbbbbb.....ooo',
   'osssssssssss.........ooo',
   'obbddd...........dddbb.o',
-  'oooddd...........ddd.ooo',
+  'ooodrd...........drd.ooo',
   'ooo..................ooo',
 ];
 
 const OUTLINE_COLOUR = 0x07080d;
 const TIRE_COLOUR = 0x0a0c12;
-const COCKPIT_COLOUR = 0x12161f;
 
-/** Symbol → colour for a circuit car, resolved from its paint. */
+/**
+ * Symbol → colour for a circuit car, resolved from its paint.
+ *
+ * Every colour slot the garage edits lands on the sprite: `primary` the body,
+ * `secondary` the sidepods, `accent` the helmet, `window` the cockpit and
+ * `rim` the nose tip and the wheel rims — so switching a paint visibly
+ * changes the Formula car, not just the road car.
+ */
 export function circuitCarPalette(colors: CarColors): Record<string, number> {
   const parse = (value: string, fallback: number): number => {
     const parsed = Number.parseInt(value.replace('#', ''), 16);
@@ -53,7 +59,7 @@ export function circuitCarPalette(colors: CarColors): Record<string, number> {
     b: parse(colors.primary, 0x37e0c8),
     s: parse(colors.secondary, 0x0e2f3a),
     H: parse(colors.accent, 0x0b0d14),
-    w: COCKPIT_COLOUR,
+    w: parse(colors.window, 0x12161f),
     d: TIRE_COLOUR,
     r: parse(colors.rim, 0xc9d2e6),
   };

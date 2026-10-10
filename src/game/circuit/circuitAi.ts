@@ -1,9 +1,26 @@
 import { CIRCUIT_AI_PROFILES, type CircuitAiProfile, type CircuitInput, type Circuit, type CircuitStats } from './types';
 import { Rng } from '../ai/aiDriver';
-import { circuitPointAt, safeCornerSpeed, circuitStats, type CircuitCar } from './vehiclePhysics';
-import { CIRCUIT } from '../config';
+import {
+  circuitPointAt,
+  downforceAt,
+  safeCornerSpeed,
+  circuitStats,
+  type CircuitCar,
+} from './vehiclePhysics';
+import { CIRCUIT, PHYSICS } from '../config';
 import { clamp } from './mathUtils';
 import type { AiDifficulty, UpgradeLevels } from '../types';
+
+/**
+ * Fraction of the theoretical braking deceleration the AI plans around.
+ *
+ * The estimate must be conservative: while cornering, the tires can
+ * only spare a share of their grip for braking, and the AI cannot see
+ * the exact ideal line. Planning with the full straight-line decel is
+ * what makes an AI arrive at a corner far too hot, so this deliberately
+ * undershoots.
+ */
+const BRAKE_SAFETY = 0.7;
 
 /**
  * Offline AI opponent for circuit practice.
@@ -63,29 +80,41 @@ export class CircuitAiDriver {
     const st = car.state;
     const stats = this.stats;
 
-    // Distance needed to brake from the current speed, plus the
-    // reaction buffer. A missed braking point shortens the
-    // buffer, which is how the AI arrives late to a corner.
-    const brakeDecel = (stats.brakeForceN * 2.2) / stats.massKg;
-    const brakeDistance = (st.v * st.v) / (2 * brakeDecel * 0.85);
-    const reaction = Math.max(
-      0.15,
-      this.profile.reactionS - this.reactionError,
-    );
-    const lookahead = brakeDistance + st.v * reaction + 12;
+    // Conservative braking deceleration: the lesser of what the tires
+    // can hold (using the *current* downforce, which the AI can feel)
+    // and what the service brakes can deliver, trimmed by a safety
+    // margin. This accounts for the grip the car is already spending
+    // on cornering instead of assuming the full straight-line figure.
+    const downforce = downforceAt(stats, st.v);
+    const gripDecel = stats.tireGrip * PHYSICS.gravity * (1 + downforce);
+    const mechanicalDecel = (stats.brakeForceN * 2.2) / stats.massKg;
+    const brakeDecel = Math.max(2.5, Math.min(gripDecel, mechanicalDecel) * BRAKE_SAFETY);
 
-    // Scan ahead for the slowest safe corner.
-    let targetV = stats.topSpeedMps;
-    const scanStep = circuit.stepM * 2;
-    for (let d = 4; d <= lookahead; d += scanStep) {
+    // Reaction delay (longer on a mistake) eats into the distance the
+    // AI can actually use for braking: a late reaction brakes later.
+    const reaction = Math.max(0.15, this.profile.reactionS - this.reactionError);
+    const horizon = (st.v * st.v) / (2 * brakeDecel) + st.v * reaction + 30;
+
+    // For every point ahead, the fastest the AI may be *now* and still
+    // shed down to that point's safe speed by the time it arrives:
+    //   vNow = sqrt(vCorner² + 2·a·d)
+    // Taking the minimum over the horizon yields a braking curve that
+    // hugs top speed on the straights and starts braking exactly early
+    // enough for the slowest corner inside the window.
+    let targetV = stats.topSpeedMps * this.paceFactor;
+    const scanStep = Math.max(circuit.stepM, 2);
+    for (let d = 3; d <= horizon; d += scanStep) {
+      const usable = d - st.v * reaction;
+      if (usable <= 0) continue;
       const point = circuitPointAt(circuit, st.s + d);
-      const safe = safeCornerSpeed(point.curvature, stats) * 0.995;
-      if (safe < targetV) targetV = safe;
+      const cornerV = safeCornerSpeed(point.curvature, stats) * this.paceFactor;
+      const allowed = Math.sqrt(cornerV * cornerV + 2 * brakeDecel * usable);
+      if (allowed < targetV) targetV = allowed;
     }
-    targetV *= this.paceFactor;
+    targetV = Math.max(4, targetV);
 
-    // A corner is ahead when the target speed is well below the
-    // current speed. Roll the mistake once per corner.
+    // A corner is ahead when the car has to slow meaningfully. Roll the
+    // mistake once per corner so a lapse is a one-off, not a trait.
     const cornerAhead = targetV < st.v - 6;
     if (cornerAhead && !this.cornerActive) {
       this.cornerActive = true;

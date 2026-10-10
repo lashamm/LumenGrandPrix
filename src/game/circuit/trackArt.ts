@@ -22,10 +22,19 @@ export const TRACK_ART = {
   kerbWhite: 0xe8ecf7,
   centreLine: 0x3a4260,
   chevron: 0x4a5578,
+  barrier: 0x39415f,
+  barrierStripe: 0x6b78a6,
+  treeDark: 0x0d1520,
+  treeLight: 0x1b2a33,
+  gantry: 0xc7d1e8,
+  gantryPost: 0x8a94b4,
   minimapBg: 0x0a0d15,
   minimapTrack: 0x3d4a6b,
   minimapStart: 0x37e0c8,
 } as const;
+
+/** Metres from the centreline to the wall — matches the physics `WALL_MARGIN`. */
+const WALL_MARGIN = 5;
 
 /** Where the track bitmap sits in world space. */
 export interface TrackLayout {
@@ -152,11 +161,17 @@ export function paintTrack(
   ctx.lineJoin = 'round';
   ctx.lineCap = 'round';
 
-  // Runoff band.
+  // Trackside scenery sits behind everything else.
+  drawScenery(ctx, circuit, toPx, px);
+
+  // Runoff band, out to the wall.
   traceCentreline(ctx, circuit, toPx);
   ctx.strokeStyle = css(TRACK_ART.runoff);
-  ctx.lineWidth = (circuit.halfWidth + 6) * 2 * px;
+  ctx.lineWidth = (circuit.halfWidth + WALL_MARGIN) * 2 * px;
   ctx.stroke();
+
+  // Barrier wall sits on the same limit the physics engine clamps to.
+  drawBarriers(ctx, circuit, toPx, px);
 
   // Kerbs on tight corners: alternating red and white strips
   // just inside both edges.
@@ -184,11 +199,92 @@ export function paintTrack(
   ctx.stroke();
   ctx.setLineDash([]);
 
-  // Start/finish checker.
+  // Start/finish checker, then the gantry spanning it.
   drawStartFinish(ctx, circuit, toPx, px);
+  drawStartGantry(ctx, circuit, toPx, px);
 
   // Direction chevrons.
   drawChevrons(ctx, circuit, toPx, px);
+}
+
+/** Trackside trees, drawn well outside the barrier so depth reads from above. */
+function drawScenery(
+  ctx: CanvasRenderingContext2D,
+  circuit: Circuit,
+  toPx: Painter,
+  px: number,
+): void {
+  const samples = circuit.samples;
+  const rng = new Rng(0x7a11 + (circuit.seed ?? 0));
+  // One row of scenery roughly every 11 m of track, both sides.
+  const every = Math.max(2, Math.round(11 / circuit.stepM));
+  const innerGap = circuit.halfWidth + WALL_MARGIN + 2;
+  for (let i = 0; i < samples.length; i += every) {
+    const s = samples[i];
+    for (const side of [1, -1] as const) {
+      if (rng.next() < 0.4) continue;
+      const gap = innerGap + rng.next() * 5;
+      const cx = s.x + s.nx * side * gap;
+      const cy = s.y + s.ny * side * gap;
+      const p = toPx(cx, cy);
+      const radius = (0.9 + rng.next() * 0.7) * px;
+      ctx.fillStyle = css(TRACK_ART.treeDark);
+      ctx.fillRect(p.x - radius, p.y - radius, radius * 2, radius * 2);
+      ctx.fillStyle = css(TRACK_ART.treeLight);
+      ctx.fillRect(p.x - radius + 0.5, p.y - radius + 0.5, radius * 1.1, radius * 1.1);
+    }
+  }
+}
+
+/** A barrier wall on both sides at the physics clamp distance. */
+function drawBarriers(
+  ctx: CanvasRenderingContext2D,
+  circuit: Circuit,
+  toPx: Painter,
+  px: number,
+): void {
+  const wall = circuit.halfWidth + WALL_MARGIN;
+  for (const side of [1, -1] as const) {
+    traceOffset(ctx, circuit, toPx, side * wall);
+    ctx.strokeStyle = css(TRACK_ART.barrier);
+    ctx.lineWidth = Math.max(1.5, 0.7 * px);
+    ctx.stroke();
+    // Painted top edge so the wall reads as a solid object, not a line.
+    traceOffset(ctx, circuit, toPx, side * (wall - 0.4));
+    ctx.strokeStyle = css(TRACK_ART.barrierStripe);
+    ctx.lineWidth = Math.max(1, 0.22 * px);
+    ctx.stroke();
+  }
+}
+
+/** A start gantry spanning the track: two posts and a beam you drive under. */
+function drawStartGantry(
+  ctx: CanvasRenderingContext2D,
+  circuit: Circuit,
+  toPx: Painter,
+  px: number,
+): void {
+  const s = circuit.samples[0];
+  const centre = toPx(s.x, s.y);
+  const angle = Math.atan2(s.ty, s.tx);
+  const reach = circuit.halfWidth + WALL_MARGIN + 3;
+
+  ctx.save();
+  ctx.translate(centre.x, centre.y);
+  ctx.rotate(angle);
+
+  // Beam across the track (local y is across, local x is along the track).
+  ctx.strokeStyle = css(TRACK_ART.gantry);
+  ctx.lineWidth = Math.max(1, 0.35 * px);
+  ctx.strokeRect(-0.6 * px, -reach * px, 1.2 * px, reach * 2 * px);
+
+  // Posts just outside each edge.
+  const post = 1.6 * px;
+  ctx.fillStyle = css(TRACK_ART.gantryPost);
+  for (const side of [1, -1] as const) {
+    ctx.fillRect(-post / 2, side * reach * px - post / 2, post, post);
+  }
+  ctx.restore();
 }
 
 function drawKerbs(

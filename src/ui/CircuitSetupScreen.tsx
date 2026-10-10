@@ -1,7 +1,11 @@
 import { useMemo, useState, type ReactNode } from 'react';
 import { CIRCUIT } from '../game/config';
-import { generateCircuit } from '../game/circuit/circuitGenerator';
-import type { CircuitRaceSetup } from '../game/circuit/types';
+import {
+  buildHandcraftedCircuit,
+  HANDCRAFTED_TRACKS,
+  resolveCircuit,
+} from '../game/circuit/handcraftedTracks';
+import type { Circuit, CircuitRaceSetup } from '../game/circuit/types';
 import { buildCode } from '../game/car/customization';
 import type { AiDifficulty } from '../game/types';
 import type { PlayerProfile } from '../state/storage';
@@ -30,6 +34,12 @@ const DIFFICULTY_OPTIONS: ReadonlyArray<{
   { id: 'hard', text: 'FACTORY', note: 'fast' },
 ];
 
+const DIFFICULTY_LABEL: Record<1 | 2 | 3, string> = {
+  1: 'GENTLE',
+  2: 'CLUB',
+  3: 'HARD',
+};
+
 function randomSeed(): number {
   return Math.floor(Math.random() * 0x7fffffff);
 }
@@ -37,10 +47,12 @@ function randomSeed(): number {
 /**
  * Circuit race setup.
  *
- * Everything on this screen runs on the same seeded generator the
- * race uses, so the SVG preview is the actual track — same seed,
- * same circuit, every time. No wallet, no entry: circuit racing is
- * offline practice and works with the wallet closed.
+ * The track pack is the headline: four handcrafted layouts, each a
+ * fixed, validated closed loop shown as a real preview. A fifth
+ * "surprise me" card still runs the seeded generator for a fresh
+ * circuit every time. Whatever is picked here is resolved by the exact
+ * same `resolveCircuit` the race uses, so the preview is never a lie.
+ * No wallet, no entry: circuit racing is offline practice.
  */
 export function CircuitSetupScreen({
   profile,
@@ -57,11 +69,23 @@ export function CircuitSetupScreen({
   const [difficulty, setDifficulty] = useState<AiDifficulty>(profile.difficulty);
   const [totalLaps, setTotalLaps] = useState<number>(CIRCUIT.totalLapsDefault);
   const [seed, setSeed] = useState(() => randomSeed());
+  const [trackId, setTrackId] = useState<string | null>(HANDCRAFTED_TRACKS[0].id);
 
-  const circuit = useMemo(() => generateCircuit(seed), [seed]);
+  const handcrafted = useMemo(
+    () =>
+      HANDCRAFTED_TRACKS.map((track) => ({
+        meta: track,
+        circuit: buildHandcraftedCircuit(track.id),
+      })),
+    [],
+  );
+
+  const circuit = useMemo(() => resolveCircuit(trackId, seed), [trackId, seed]);
+
+  const isRandom = trackId === null;
 
   const start = () => {
-    onStart({ seed, totalLaps, opponentCount, difficulty });
+    onStart({ trackId, seed, totalLaps, opponentCount, difficulty });
   };
 
   return (
@@ -81,16 +105,65 @@ export function CircuitSetupScreen({
             type="button"
             className="btn btn--ghost btn--sm"
             onClick={() => setSeed(randomSeed())}
+            disabled={!isRandom}
+            title={isRandom ? 'Generate another random circuit' : 'Pick “SURPRISE ME” to reroll'}
           >
             ⟳ REROLL
           </button>
         </header>
 
         <section className="panel">
+          <h3 className="panel__title">SELECT TRACK</h3>
+          <div className="track-grid">
+            {handcrafted.map(({ meta, circuit: trackCircuit }) => (
+              <button
+                type="button"
+                key={meta.id}
+                className={`track-card${trackId === meta.id ? ' is-active' : ''}`}
+                onClick={() => setTrackId(meta.id)}
+              >
+                {trackCircuit && (
+                  <CircuitPreview circuit={trackCircuit} width={150} height={108} pad={8} />
+                )}
+                <span className="track-card__name">{meta.name}</span>
+                <span className="track-card__tag">{meta.tagline}</span>
+                <span className="track-card__meta">
+                  <DifficultyDots level={meta.difficulty} />
+                  <span className="mono">
+                    {trackCircuit ? `${Math.round(trackCircuit.length)} M` : '—'}
+                  </span>
+                </span>
+              </button>
+            ))}
+            <button
+              type="button"
+              className={`track-card track-card--random${isRandom ? ' is-active' : ''}`}
+              onClick={() => setTrackId(null)}
+            >
+              <span className="track-card__dice" aria-hidden="true">
+                ✦
+              </span>
+              <span className="track-card__name">SURPRISE ME</span>
+              <span className="track-card__tag">A fresh generated circuit every race.</span>
+              <span className="track-card__meta">
+                <span className="track-card__tag">SEED</span>
+                <span className="mono">{isRandom ? seed.toString(16).toUpperCase() : 'RANDOM'}</span>
+              </span>
+            </button>
+          </div>
+        </section>
+
+        <section className="panel">
           <h3 className="panel__title">
-            TRACK · SEED <span className="mono">{seed.toString(16).toUpperCase()}</span>
+            {isRandom ? (
+              <>
+                TRACK · SEED <span className="mono">{seed.toString(16).toUpperCase()}</span>
+              </>
+            ) : (
+              'TRACK · PREVIEW'
+            )}
           </h3>
-          <CircuitPreview seed={seed} />
+          <CircuitPreview circuit={circuit} />
           <dl className="spec-list">
             <div>
               <dt>NAME</dt>
@@ -108,8 +181,9 @@ export function CircuitSetupScreen({
             </div>
           </dl>
           <p className="panel__note panel__note--muted">
-            Every seed is a real closed circuit — straights, sweeps, hairpins, S-bends and
-            chicanes, validated for width and safe cornering before it ever reaches the track.
+            {isRandom
+              ? 'Every seed is a real closed circuit — straights, sweeps, hairpins, S-bends and chicanes, validated for width and safe cornering before it ever reaches the track.'
+              : HANDCRAFTED_TRACKS.find((track) => track.id === trackId)?.description}
           </p>
         </section>
 
@@ -136,10 +210,10 @@ export function CircuitSetupScreen({
       <aside className="sidebar">
         <section className="panel">
           <h3 className="panel__title">YOUR RIDE</h3>
-          <CarPreview car={profile.car} compact />
+          <CarPreview car={profile.circuitCar} category="circuit" compact />
           <div className="panel__row">
             <span>BUILD</span>
-            <span className="mono">{buildCode(profile.car)}</span>
+            <span className="mono">{buildCode(profile.circuitCar)}</span>
           </div>
           <div className="panel__row">
             <span>BEST CIRCUIT LAP</span>
@@ -180,19 +254,43 @@ export function CircuitSetupScreen({
   );
 }
 
-/** Live SVG of the exact circuit this seed generates. */
-function CircuitPreview({ seed }: { seed: number }): ReactNode {
-  const circuit = useMemo(() => generateCircuit(seed), [seed]);
-  const WIDTH = 260;
-  const HEIGHT = 190;
-  const pad = 14;
+/** Small difficulty indicator: filled dots for the hard end. */
+function DifficultyDots({ level }: { level: 1 | 2 | 3 }): ReactNode {
+  return (
+    <span className="track-card__diff" title={DIFFICULTY_LABEL[level]}>
+      {[1, 2, 3].map((step) => (
+        <span key={step} className={step <= level ? 'is-on' : ''}>
+          ●
+        </span>
+      ))}
+    </span>
+  );
+}
+
+/**
+ * Top-down SVG of a circuit's centreline and start/finish line.
+ *
+ * Drawn straight from the same `Circuit` the race consumes, so the
+ * card thumbnails and the big preview are the actual track.
+ */
+function CircuitPreview({
+  circuit,
+  width = 260,
+  height = 190,
+  pad = 14,
+}: {
+  circuit: Circuit;
+  width?: number;
+  height?: number;
+  pad?: number;
+}): ReactNode {
   const boundsWidth = circuit.bounds.maxX - circuit.bounds.minX;
   const boundsHeight = circuit.bounds.maxY - circuit.bounds.minY;
-  const scale = Math.min((WIDTH - pad * 2) / boundsWidth, (HEIGHT - pad * 2) / boundsHeight);
+  const scale = Math.min((width - pad * 2) / boundsWidth, (height - pad * 2) / boundsHeight);
   const offsetX =
-    pad + ((WIDTH - pad * 2) - boundsWidth * scale) / 2 - circuit.bounds.minX * scale;
+    pad + ((width - pad * 2) - boundsWidth * scale) / 2 - circuit.bounds.minX * scale;
   const offsetY =
-    pad + ((HEIGHT - pad * 2) - boundsHeight * scale) / 2 - circuit.bounds.minY * scale;
+    pad + ((height - pad * 2) - boundsHeight * scale) / 2 - circuit.bounds.minY * scale;
   const points = circuit.samples
     .filter((_, index) => index % 3 === 0)
     .map(
@@ -208,7 +306,7 @@ function CircuitPreview({ seed }: { seed: number }): ReactNode {
   return (
     <svg
       className="circuit-preview"
-      viewBox={`0 0 ${WIDTH} ${HEIGHT}`}
+      viewBox={`0 0 ${width} ${height}`}
       role="img"
       aria-label={`Preview of ${circuit.name}`}
     >

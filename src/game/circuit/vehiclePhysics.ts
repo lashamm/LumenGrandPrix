@@ -51,17 +51,19 @@ const BRAKE_LOCKUP_DECAY = 0.35;
 const LOCKUP_EFFECTIVENESS = 0.55;
 /** Lock-up adds this much slide per second while active. */
 const SLIDE_FROM_LOCKUP = 0.8;
+/** Fraction of steering authority a fully-locked wheel set takes away. */
+const LOCKUP_STEER_LOSS = 0.5;
 
-const SLIDE_GAIN = 1.35;
-const SLIDE_ATTACK = 4;
-const SLIDE_DECAY = 2.5;
+const SLIDE_GAIN = 1.25;
+const SLIDE_ATTACK = 3.5;
+const SLIDE_DECAY = 3.2;
 /** Speed scrub per unit of slide, m/s^2. */
-const SLIDE_SCRUB = 7;
+const SLIDE_SCRUB = 6;
 
 /** Slide intensity that risks a spin. */
-const SPIN_SLIDE = 1.35;
+const SPIN_SLIDE = 1.45;
 /** Sustained time over the spin threshold, seconds. */
-const SPIN_TIME = 0.28;
+const SPIN_TIME = 0.32;
 const SPIN_DURATION = 1.15;
 const SPIN_RECOVER_SPEED = 7;
 /** Invulnerability after a spin so recoveries cannot chain. */
@@ -79,11 +81,11 @@ const WALL_SPIN_SPEED = 22;
 /** Steering servo gain, 1/s. */
 const STEER_RESPONSE = 6;
 /** Centering bias: radians of heading per metre off the line. */
-const CENTER_GAIN = 0.06;
+const CENTER_GAIN = 0.08;
 /** Desperate centering while off-track. */
-const OFFTRACK_CENTER_GAIN = 0.1;
+const OFFTRACK_CENTER_GAIN = 0.12;
 /** Fraction of the grip budget the servo may use. */
-const YAW_AUTHORITY = 0.92;
+const YAW_AUTHORITY = 0.96;
 /** Speed floor for the yaw-authority calculation, m/s. */
 const MIN_SPEED_YAW = 4;
 
@@ -102,7 +104,11 @@ export function circuitStats(levels: UpgradeLevels, bonus = 0): CircuitStats {
     tireGrip: base.tireGrip,
     dragArea: base.dragArea * 0.55,
     aeroDownforce: 0.3 + 0.3 * (levels.aero - 1),
-    brakeGripBonus: 1 + 0.18 * (levels.brakes - 1),
+    // Brake upgrades add piston area *and* modulation headroom; scaling the
+    // usable grip with the upgrade keeps uprated brakes from out-braking
+    // the tires on a straight, which would otherwise turn an upgrade into
+    // a lock-up liability.
+    brakeGripBonus: 1 + 0.24 * (levels.brakes - 1),
   };
 }
 
@@ -207,6 +213,7 @@ function freshState(): CircuitCarState {
     lastLapStart: 0,
     heading: 0,
     cornerRatio: 0,
+    lateralRatio: 0,
     brakeRatio: 0,
     gripRatio: 0,
     gripState: 'green',
@@ -255,6 +262,7 @@ export class CircuitCar implements CircuitCar {
     this.state.lastLapStart = 0;
     this.state.heading = Math.atan2(point.ty, point.tx);
     this.state.cornerRatio = 0;
+    this.state.lateralRatio = 0;
     this.state.brakeRatio = 0;
     this.state.gripRatio = 0;
     this.state.gripState = 'green';
@@ -312,6 +320,9 @@ export class CircuitCar implements CircuitCar {
       if (st.spinAccum >= SPIN_TIME) {
         st.spinAccum = 0;
         st.spinTimer = SPIN_DURATION;
+        // The car keeps the lateral momentum it had as it let go, so a
+        // spin that begins while running wide continues off the line.
+        st.latVel = st.v * Math.sin(trackError);
         st.slide = 0;
         st.lockup = Math.min(st.lockup, 0.3);
       }
@@ -375,9 +386,18 @@ export class CircuitCar implements CircuitCar {
     st.v = Math.max(0, st.v + net * dt);
 
     // ---------------------------------------------------- steering --
-    const desiredHeading = tangentAngle + centering * st.lat;
+    // The servo steers toward the car's own racing line, not the
+    // centreline: the lateral error is measured against `lineOffset`.
+    // Positive `lat` is left of travel, so a car left of its line
+    // steers right (heading lags the tangent) and vice versa.
+    const latError = st.lat - this.lineOffset;
+    const desiredHeading = tangentAngle + centering * latError;
     const steerError = wrapAngle(desiredHeading - st.heading);
-    const maxYaw = availableYaw * YAW_AUTHORITY;
+    // Locked wheels cannot bite laterally: a locked wheel set loses steering
+    // authority, so braking too hard mid-corner makes the car run wide
+    // instead of bending into the turn.
+    const maxYaw =
+      availableYaw * YAW_AUTHORITY * (1 - st.lockup * LOCKUP_STEER_LOSS);
     const yaw = clamp(steerError * STEER_RESPONSE, -maxYaw, maxYaw);
     if (st.spinTimer <= 0) {
       st.heading += yaw * dt;
@@ -385,10 +405,11 @@ export class CircuitCar implements CircuitCar {
 
     // ---------------------------------------------------- advance --
     if (st.spinTimer > 0) {
-      // A spun car slides straight-ish while the wheels regain bite.
+      // A spun car slides straight-ish, carrying the lateral momentum it
+      // had when it let go, while the wheels regain bite.
       st.s += st.v * dt * 0.9;
-      st.lat -= st.lat * Math.min(1, 2.5 * dt);
-      st.latVel = 0;
+      st.lat += st.latVel * dt;
+      st.latVel *= Math.max(0, 1 - 1.5 * dt);
     } else {
       st.s += st.v * Math.cos(trackError) * dt;
       st.lat += st.v * Math.sin(trackError) * dt;
@@ -404,11 +425,14 @@ export class CircuitCar implements CircuitCar {
         st.spinTimer = SPIN_DURATION;
         st.slide = 0;
         st.spinAccum = 0;
+        // A wall strike spins the car back toward the track.
+        st.latVel = -Math.sign(st.lat) * Math.min(st.v, 15) * 0.5;
       }
     }
 
     // --------------------------------------------------- readouts --
     st.cornerRatio = cornerRatio;
+    st.lateralRatio = yawRatio;
     st.gripRatio = Math.max(yawRatio, st.brakeRatio);
     st.gripState = gripStateFor(st.gripRatio);
   }

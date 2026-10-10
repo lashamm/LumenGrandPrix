@@ -8,7 +8,7 @@ import {
   type CircuitRaceResult,
   type CircuitRaceSetup,
 } from '../game/circuit/types';
-import { generateCircuit } from '../game/circuit/circuitGenerator';
+import { resolveCircuit } from '../game/circuit/handcraftedTracks';
 import { createPhaserGame } from '../game/game';
 import { CircuitRaceScene, type CircuitSceneData } from '../game/scenes/CircuitRaceScene';
 import type { UpgradeLevels } from '../game/types';
@@ -62,8 +62,8 @@ export function CircuitRaceScreen({
    * race down.
    */
   const [session] = useState(() => ({
-    levels: profile.car.performance as UpgradeLevels,
-    car: carFromCustomization(profile.car, 'LUMEN MK-I'),
+    levels: profile.circuitCar.performance as UpgradeLevels,
+    car: carFromCustomization(profile.circuitCar, 'LUMEN MK-I'),
   }));
 
   const togglePause = useCallback(() => {
@@ -129,7 +129,10 @@ export function CircuitRaceScreen({
     setRunId((id) => id + 1);
   }, [controls, pauseState]);
 
-  const circuit = useMemo(() => generateCircuit(setup.seed), [setup.seed]);
+  const circuit = useMemo(
+    () => resolveCircuit(setup.trackId, setup.seed),
+    [setup.trackId, setup.seed],
+  );
 
   return (
     <div className="screen screen--race">
@@ -170,8 +173,11 @@ export function CircuitRaceScreen({
         <span>
           <kbd>ESC</kbd> pause
         </span>
+        <span>
+          <kbd>M</kbd> map
+        </span>
         <span className="race__legend-note">
-          Build {buildCode(profile.car)} · the steering servo follows the racing line — your job is
+          Build {buildCode(profile.circuitCar)} · the steering servo follows the racing line — your job is
           speed. Ease off before the grip bar goes red.
         </span>
       </footer>
