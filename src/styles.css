@@ -2037,6 +2037,41 @@ button:disabled {
   }
 }
 
+/* Portrait phones: a 16:9 canvas can only ever fill the width, so hand the
+ * spare vertical space to the touch controls (bigger, comfier targets) instead
+ * of leaving dead gaps around the canvas. The canvas itself goes full-bleed —
+ * no frame or shadow — to reclaim every pixel. */
+@media (orientation: portrait) and (max-width: 760px) {
+  .screen--race {
+    gap: 6px;
+    padding:
+      max(4px, env(safe-area-inset-top))
+      max(4px, env(safe-area-inset-right))
+      max(6px, env(safe-area-inset-bottom))
+      max(4px, env(safe-area-inset-left));
+  }
+
+  .stage {
+    flex: 0 0 auto;
+  }
+
+  .stage__canvas {
+    border: 0;
+    border-radius: 0;
+    box-shadow: none;
+  }
+
+  .race-controls {
+    flex: 1 1 auto;
+    margin-top: 4px;
+    max-height: 46vh;
+  }
+
+  .pedal {
+    min-height: 0;
+  }
+}
+
 /* Phone-width: drop the secondary badges so the bar stays a single line. */
 @media (max-width: 640px) {
   .race__meta {

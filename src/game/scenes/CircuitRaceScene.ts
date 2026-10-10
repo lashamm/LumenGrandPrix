@@ -6,6 +6,7 @@ import {
   computeTrackLayout,
   paintMinimap,
   paintTrack,
+  TRACK_ART,
   type MinimapTransform,
   type TrackLayout,
 } from '../circuit/trackArt';
@@ -58,10 +59,26 @@ const MAX_MARKS = 360;
 const DUST_LIFE_S = 0.8;
 const MAX_DUST = 140;
 
-/** World metres of runway visible ahead of the car. */
-const CAMERA_LOOK_BASE = 6;
-const CAMERA_LOOK_PER_MPS = 0.25;
-const CAMERA_LOOK_MAX = 18;
+/**
+ * How far ahead of the car the camera centre sits, as a fraction of the
+ * visible world height. Small enough that the car stays close to the centre
+ * of the screen, large enough to read as a rear-biased chase view.
+ */
+const CAM_BIAS_FRACTION = 0.14;
+/**
+ * Time constant (seconds) of the low-pass applied to the lead *direction*.
+ * Only the direction is smoothed — the camera never lags the car's position,
+ * so accelerating, braking or spinning cannot pull the car off-centre.
+ */
+const CAM_DIR_TAU_S = 0.18;
+/**
+ * Phones render the fixed 480×270 canvas smaller than its logical size, which
+ * shrinks everything on screen. Compensate with a gentle zoom-in (capped) so
+ * the car and road stay a comfortable size; desktops and tablets are left at
+ * the base zoom.
+ */
+const CAM_SCREEN_SCALE_MIN = 0.7;
+const CAM_ZOOM_BOOST_MAX = 1.35;
 
 /**
  * The simulation is stepped at a fixed 1/60 s regardless of the
@@ -198,6 +215,16 @@ export class CircuitRaceScene extends Phaser.Scene {
   private hudObjects: Phaser.GameObjects.GameObject[] = [];
   private worldObjects: Phaser.GameObjects.GameObject[] = [];
 
+  /**
+   * Follow-camera state: a low-passed unit vector for the rear-bias direction
+   * and the frame time to integrate it. The camera position itself is always
+   * the car's live world position, so it is never stored or smoothed.
+   */
+  private camDirX = 1;
+  private camDirY = 0;
+  private camReady = false;
+  private camDt = 1 / 60;
+
   private countdownStep = -1;
   private elapsed = 0;
   private reported = false;
@@ -225,8 +252,10 @@ export class CircuitRaceScene extends Phaser.Scene {
   }
 
   create(): void {
-    this.cameras.main.setZoom(CIRCUIT.camZoom);
-    this.cameras.main.setBackgroundColor(PHASER.backgroundColor);
+    this.updateCameraZoom();
+    // Match the track bitmap's ground so the sliver of world visible past the
+    // bitmap edge (the follow camera is intentionally unclamped) is seamless.
+    this.cameras.main.setBackgroundColor(TRACK_ART.ground);
     this.uiCamera = this.cameras.add(0, 0, PHASER.width, PHASER.height);
 
     this.trackLayout = computeTrackLayout(this.circuit);
@@ -528,6 +557,7 @@ export class CircuitRaceScene extends Phaser.Scene {
   override update(_time: number, delta: number): void {
     const frameSec = Math.min(delta / 1000, MAX_FRAME_S);
     this.elapsed += frameSec;
+    this.camDt = frameSec;
 
     if (!this.payload.pauseState.paused) {
       // Fixed-step simulation with an interpolation remainder. Frames are
@@ -552,6 +582,9 @@ export class CircuitRaceScene extends Phaser.Scene {
     }
 
     this.alpha = Math.min(1, this.timeAccum / FIXED_DT);
+
+    // Track viewport resizes and rotation so the world zoom stays readable.
+    this.updateCameraZoom();
 
     // The overlay owns the map toggle; the scene just obeys it.
     const showMap = this.payload.controls.mapVisible;
@@ -671,24 +704,11 @@ export class CircuitRaceScene extends Phaser.Scene {
     const playerIndex = this.model.playerIndex;
     const playerView = this.interpolatedCar(playerIndex);
 
-    // Follow camera with a speed-dependent lookahead,
-    // clamped so the view never leaves the circuit.
+    // Keep the player's car pinned near the centre of the screen. The camera
+    // tracks the car's live world position every frame; only the direction of
+    // the rear-bias lead is smoothed, so the view never lags or drifts.
     const position = carWorldPosition(this.circuit, playerView.s, playerView.lat);
-    const point = circuitPointAt(this.circuit, playerView.s);
-    const look = Math.min(
-      CAMERA_LOOK_MAX,
-      CAMERA_LOOK_BASE + (this.model.cars[playerIndex].state.v) * CAMERA_LOOK_PER_MPS,
-    );
-    const viewW = PHASER.width / CIRCUIT.camZoom;
-    const viewH = PHASER.height / CIRCUIT.camZoom;
-    const margin = 30;
-    const minX = this.circuit.bounds.minX - margin + viewW / 2;
-    const maxX = this.circuit.bounds.maxX + margin - viewW / 2;
-    const minY = this.circuit.bounds.minY - margin + viewH / 2;
-    const maxY = this.circuit.bounds.maxY + margin - viewH / 2;
-    const camX = minX > maxX ? (minX + maxX) / 2 : clamp(position.x + point.tx * look, minX, maxX);
-    const camY = minY > maxY ? (minY + maxY) / 2 : clamp(position.y + point.ty * look, minY, maxY);
-    this.cameras.main.centerOn(camX, camY);
+    this.updateFollowCamera(playerView.s, playerView.lat);
 
     // Cars, depth-sorted by world Y so lower cars draw on top.
     for (let index = 0; index < this.model.cars.length; index += 1) {
@@ -762,6 +782,67 @@ export class CircuitRaceScene extends Phaser.Scene {
         this.minimapOrigin.y + dot.y,
         isPlayer ? 2.4 : 2,
       );
+    }
+  }
+
+  /**
+   * Keeps the player's car pinned near the centre of the screen.
+   *
+   * The camera centre is the car's live world position (never an AI car and
+   * never the track centre) pushed a little ahead of it along the road, which
+   * gives the rear-biased chase view while the car itself stays close to the
+   * middle. Only the *direction* of that lead is low-passed, so cusps and
+   * spins rotate the bias gradually instead of snapping the view, and there is
+   * no positional lag that would let the car slide off-centre under
+   * acceleration or braking. The camera is deliberately not clamped to the
+   * track bounds: clamping was what pushed the car toward the edge of the
+   * screen on the outer parts of a circuit.
+   */
+  private updateFollowCamera(s: number, lat: number): void {
+    const position = carWorldPosition(this.circuit, s, lat);
+    const point = circuitPointAt(this.circuit, s);
+
+    const k = 1 - Math.exp(-this.camDt / CAM_DIR_TAU_S);
+    if (!this.camReady) {
+      this.camDirX = point.tx;
+      this.camDirY = point.ty;
+      this.camReady = true;
+    } else {
+      this.camDirX += (point.tx - this.camDirX) * k;
+      this.camDirY += (point.ty - this.camDirY) * k;
+    }
+    // The smoothed vector is used as-is (never re-normalised): its length is 1
+    // on a straight but dips toward 0 while the road direction flips, so on a
+    // hairpin the bias collapses and the car glides back to dead centre instead
+    // of the lead spinning around it.
+    const viewH = PHASER.height / this.cameras.main.zoom;
+    const lead = viewH * CAM_BIAS_FRACTION;
+    this.cameras.main.centerOn(
+      position.x + this.camDirX * lead,
+      position.y + this.camDirY * lead,
+    );
+  }
+
+  /**
+   * Viewport-adaptive camera zoom.
+   *
+   * The canvas is a fixed 480×270 that `Scale.FIT` shrinks on small screens, so
+   * a phone would otherwise show a smaller car than a desktop. This nudges the
+   * world zoom up when the canvas is displayed below its logical height, and
+   * leaves desktops (which already look right) exactly as they were. It is
+   * cheap and safe to call every frame, so it tracks resizes and rotation.
+   */
+  private updateCameraZoom(): void {
+    const base = CIRCUIT.camZoom;
+    const displayHeight = this.scale.displaySize?.height ?? 0;
+    const logicalHeight = this.scale.height || PHASER.height;
+    const screenScale =
+      displayHeight > 1
+        ? clamp(displayHeight / logicalHeight, CAM_SCREEN_SCALE_MIN, 1)
+        : 1;
+    const zoom = clamp(base / screenScale, base, base * CAM_ZOOM_BOOST_MAX);
+    if (Math.abs(this.cameras.main.zoom - zoom) > 1e-3) {
+      this.cameras.main.setZoom(zoom);
     }
   }
 

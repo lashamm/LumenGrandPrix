@@ -49,7 +49,12 @@ const VIEW = {
   horizon: 52,
   playerLaneY: 158,
   aiLaneY: 108,
-  playerX: 150,
+  /**
+   * Horizontal anchor for the player's car. The strip scrolls the world past a
+   * fixed car, so this must sit on the canvas centre line for the car to stay
+   * centred; the opponent and the scenery are positioned relative to it.
+   */
+  playerX: PHASER.width / 2,
   /** Screen pixels the strip scrolls per metre travelled. */
   pxPerMetre: 12,
   /** Screen pixels per metre of lead over the opponent (exaggerated for readability). */

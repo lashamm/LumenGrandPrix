@@ -12,6 +12,7 @@
     "sim": "tsx scripts/simulate.ts",
     "sweep": "tsx scripts/sweep.ts",
     "car-art": "tsx scripts/verify-car-art.ts",
+    "camera": "tsx scripts/verify-camera.ts",
     "test": "tsx scripts/test-circuit.ts"
   },
   "dependencies": {
