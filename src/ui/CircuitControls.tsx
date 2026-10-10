@@ -130,7 +130,7 @@ export function CircuitControls({
   }, [phase]);
 
   return (
-    <div className="race-controls">
+    <div className="race-controls" onContextMenu={(event) => event.preventDefault()}>
       <button
         type="button"
         className={`pedal pedal--gas${pressed.throttle ? ' is-pressed' : ''}`}
@@ -140,6 +140,7 @@ export function CircuitControls({
         }}
         onPointerUp={() => set('throttle', false)}
         onPointerCancel={() => set('throttle', false)}
+        onLostPointerCapture={() => set('throttle', false)}
         disabled={phase === 'finished'}
       >
         <span className="pedal__label">
@@ -157,7 +158,8 @@ export function CircuitControls({
         }}
         onPointerUp={() => set('brake', false)}
         onPointerCancel={() => set('brake', false)}
-        disabled={phase !== 'racing'}
+        onLostPointerCapture={() => set('brake', false)}
+        disabled={phase === 'finished'}
       >
         <span className="pedal__label">BRAKE</span>
         <span className="pedal__hint">S / ↓ / SPACE</span>

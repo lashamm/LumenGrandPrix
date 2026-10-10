@@ -109,7 +109,7 @@ export function RaceControls({
   }, [phase]);
 
   return (
-    <div className="race-controls">
+    <div className="race-controls" onContextMenu={(event) => event.preventDefault()}>
       <button
         type="button"
         className={`pedal pedal--gas${pressed.gas ? ' is-pressed' : ''}`}
@@ -119,6 +119,7 @@ export function RaceControls({
         }}
         onPointerUp={() => set('gas', false)}
         onPointerCancel={() => set('gas', false)}
+        onLostPointerCapture={() => set('gas', false)}
         disabled={phase === 'finished'}
       >
         <span className="pedal__label">
@@ -136,6 +137,7 @@ export function RaceControls({
         }}
         onPointerUp={() => set('brake', false)}
         onPointerCancel={() => set('brake', false)}
+        onLostPointerCapture={() => set('brake', false)}
         disabled={phase !== 'racing'}
       >
         <span className="pedal__label">BRAKE</span>
@@ -146,9 +148,13 @@ export function RaceControls({
         <button
           type="button"
           className={`pedal pedal--shift${pressed.upshift ? ' is-pressed' : ''}`}
-          onPointerDown={() => set('upshift', true)}
+          onPointerDown={(event) => {
+            event.currentTarget.setPointerCapture(event.pointerId);
+            set('upshift', true);
+          }}
           onPointerUp={() => set('upshift', false)}
           onPointerCancel={() => set('upshift', false)}
+          onLostPointerCapture={() => set('upshift', false)}
           disabled={phase === 'finished'}
         >
           <span className="pedal__label">UPSHIFT</span>
@@ -157,9 +163,13 @@ export function RaceControls({
         <button
           type="button"
           className={`pedal pedal--shift pedal--down${pressed.downshift ? ' is-pressed' : ''}`}
-          onPointerDown={() => set('downshift', true)}
+          onPointerDown={(event) => {
+            event.currentTarget.setPointerCapture(event.pointerId);
+            set('downshift', true);
+          }}
           onPointerUp={() => set('downshift', false)}
           onPointerCancel={() => set('downshift', false)}
+          onLostPointerCapture={() => set('downshift', false)}
           disabled={phase === 'finished'}
         >
           <span className="pedal__label">DOWNSHIFT</span>
