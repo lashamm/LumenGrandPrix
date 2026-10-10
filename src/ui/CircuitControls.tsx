@@ -130,7 +130,7 @@ export function CircuitControls({
   }, [phase]);
 
   return (
-    <div className="race-controls" onContextMenu={(event) => event.preventDefault()}>
+    <div className="race-controls race-controls--circuit" onContextMenu={(event) => event.preventDefault()}>
       <button
         type="button"
         className={`pedal pedal--gas${pressed.throttle ? ' is-pressed' : ''}`}

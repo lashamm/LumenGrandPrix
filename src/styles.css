@@ -1043,22 +1043,24 @@ button:disabled {
 /* ------------------------------------------------------------------ race -- */
 
 .screen--race {
-  gap: 10px;
+  gap: 12px;
   justify-content: flex-start;
   align-items: center;
-  /* Break out of the shared centred column so the racing area can use the
-   * whole viewport. Locked to the visible height so mobile browser chrome can
-   * never push the controls off-screen. */
-  max-width: none;
+  /* Own the full viewport height (so mobile browser chrome can never push the
+   * controls off-screen) but keep the shared 1280px centred column, which is
+   * what desktop Drag Racing used to look like before the responsive work. */
+  width: 100%;
+  max-width: 1280px;
+  margin: 0 auto;
   height: 100vh;
   height: 100dvh;
   min-height: 0;
   overflow: hidden;
   padding:
-    max(8px, env(safe-area-inset-top))
-    max(8px, env(safe-area-inset-right))
-    max(8px, env(safe-area-inset-bottom))
-    max(8px, env(safe-area-inset-left));
+    max(10px, env(safe-area-inset-top))
+    max(12px, env(safe-area-inset-right))
+    max(10px, env(safe-area-inset-bottom))
+    max(12px, env(safe-area-inset-left));
   user-select: none;
   -webkit-user-select: none;
   -webkit-touch-callout: none;
@@ -1116,16 +1118,22 @@ button:disabled {
   width: 100%;
   display: grid;
   place-items: center;
+  overflow: hidden;
+  /* Size containment lets the canvas host below measure the leftover space
+   * (cqw/cqh) and fit a 16:9 play area into whichever axis runs out first.
+   * The old `width:100% + max-height` capped the host's height but let the
+   * canvas keep its width-derived height, so the bottom of the game was
+   * clipped — that was the desktop Drag Racing cropping bug. */
+  container-type: size;
 }
 
 /* The canvas host keeps its aspect ratio (set inline from PHASER dims) while
- * growing to fill whichever of width/height runs out first. `max-height`
- * transfers through `aspect-ratio` to also cap the width, so the play area is
- * never letterboxed and never stretched. */
+ * fitting inside the stage: full width, but never more width than the
+ * available height allows. So it is never cropped and never letterboxed. */
 .stage__canvas {
   width: 100%;
+  width: min(100cqw, calc(100cqh * var(--stage-ratio, 1.7777778)));
   max-width: 100%;
-  max-height: 100%;
   border: 1px solid var(--line-strong);
   border-radius: var(--radius);
   overflow: hidden;
@@ -1964,27 +1972,30 @@ button:disabled {
   .result-card__verdict {
     font-size: 34px;
   }
+}
 
-  /* --- fullscreen race layout ---------------------------------------- */
-
+/* Phone / small-screen racing. Portrait phones are width-bound and landscape
+ * phones are height-bound, but the base rules already fit the canvas without
+ * cropping, so this section only has to reclaim chrome and lay the touch
+ * controls out compactly and reachably. A comma list keeps both orientations of
+ * a phone (and any genuinely narrow window) on the same sheet. */
+@media (max-width: 820px), (orientation: landscape) and (max-height: 520px) {
   .screen--race {
-    gap: 8px;
+    gap: 6px;
     padding:
-      max(6px, env(safe-area-inset-top))
-      max(6px, env(safe-area-inset-right))
+      max(4px, env(safe-area-inset-top))
+      max(4px, env(safe-area-inset-right))
       max(6px, env(safe-area-inset-bottom))
-      max(6px, env(safe-area-inset-left));
+      max(4px, env(safe-area-inset-left));
   }
 
-  /* Keep the bar on one line; the title and QUIT are all it needs while racing
-   * because every other readout lives in the canvas HUD. */
   .race__bar {
     flex-wrap: nowrap;
-    gap: 8px;
+    gap: 6px;
   }
 
   .race__title {
-    font-size: 12px;
+    font-size: 11px;
     min-width: 0;
     overflow: hidden;
   }
@@ -1995,121 +2006,148 @@ button:disabled {
     text-overflow: ellipsis;
   }
 
+  /* Every readout that matters lives in the canvas HUD, so drop the badges and
+   * the keyboard legend to give the racing view the majority of the screen. */
+  .race__meta,
   .race__legend {
     display: none;
   }
 
-  /* One-handed pedal cluster: a compact 2x2 pad pinned to the bottom with the
-   * accelerator in the bottom-right (the easiest thumb target) and the shifter
-   * stacked directly above it. Drag and circuit expose the same three children
-   * (gas, brake, pedal-stack), so a single layout drives both. */
   .race-controls {
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-    grid-template-rows: 1fr 1.15fr;
-    gap: 10px;
-    max-width: 460px;
+    gap: 8px;
+    max-width: 400px;
     margin: 0 auto;
   }
 
-  .race-controls > .pedal-stack {
-    display: contents;
-  }
-
-  .race-controls > .pedal--gas {
-    grid-area: 2 / 2;
-  }
-
-  .race-controls > .pedal--brake {
-    grid-area: 2 / 1;
-  }
-
-  .race-controls > .pedal-stack > :nth-child(1) {
-    grid-area: 1 / 2;
-  }
-
-  .race-controls > .pedal-stack > :nth-child(2) {
-    grid-area: 1 / 1;
-  }
-
   .pedal {
-    min-height: 62px;
-  }
-}
-
-/* Portrait phones: a 16:9 canvas can only ever fill the width, so hand the
- * spare vertical space to the touch controls (bigger, comfier targets) instead
- * of leaving dead gaps around the canvas. The canvas itself goes full-bleed —
- * no frame or shadow — to reclaim every pixel. */
-@media (orientation: portrait) and (max-width: 760px) {
-  .screen--race {
-    gap: 6px;
-    padding:
-      max(4px, env(safe-area-inset-top))
-      max(4px, env(safe-area-inset-right))
-      max(6px, env(safe-area-inset-bottom))
-      max(4px, env(safe-area-inset-left));
+    padding: 10px 8px;
+    min-height: 44px;
   }
 
-  .stage {
-    flex: 0 0 auto;
+  .pedal__label {
+    font-size: 13px;
+    letter-spacing: 0.1em;
   }
 
-  .stage__canvas {
-    border: 0;
-    border-radius: 0;
-    box-shadow: none;
-  }
-
-  .race-controls {
-    flex: 1 1 auto;
-    margin-top: 4px;
-    max-height: 46vh;
-  }
-
-  .pedal {
-    min-height: 0;
-  }
-}
-
-/* Phone-width: drop the secondary badges so the bar stays a single line. */
-@media (max-width: 640px) {
-  .race__meta {
+  /* The hints describe keys nobody has on a phone. */
+  .pedal__hint {
     display: none;
   }
 }
 
-/* Landscape phones: the canvas is height-bound, so lay the pedals out as one
- * reachable row along the bottom instead of a tall pad. */
-@media (orientation: landscape) and (max-height: 520px) {
-  .race__meta {
-    display: flex;
+/* Narrow / portrait pads: compact 2x2 clusters sized for thumbs. */
+@media (max-width: 820px) {
+  /* Drag: gas bottom-right (easiest thumb), brake bottom-left, and the shifter
+   * stacked directly above the pair so a hand can shift and launch at once. */
+  .race-controls--drag {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    grid-template-rows: auto 1.25fr;
+    max-width: 340px;
   }
 
-  .race-controls {
+  .race-controls--drag > .pedal-stack {
+    display: contents;
+  }
+
+  .race-controls--drag > .pedal--gas {
+    grid-area: 2 / 2;
+    min-height: 54px;
+  }
+
+  .race-controls--drag > .pedal--brake {
+    grid-area: 2 / 1;
+    min-height: 50px;
+  }
+
+  .race-controls--drag > .pedal-stack > :nth-child(1) {
+    grid-area: 1 / 2;
+    min-height: 42px;
+  }
+
+  .race-controls--drag > .pedal-stack > :nth-child(2) {
+    grid-area: 1 / 1;
+    min-height: 42px;
+  }
+
+  /* Circuit: a compact utility row (pause / map) above two large pedals, so the
+   * primary throttle/brake targets never sit under the utilities. */
+  .race-controls--circuit {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    grid-template-rows: auto 1.3fr;
+    max-width: 340px;
+  }
+
+  .race-controls--circuit > .pedal-stack {
+    grid-area: 1 / 1 / 2 / 3;
+    display: flex;
+    gap: 8px;
+  }
+
+  .race-controls--circuit > .pedal-stack > .pedal {
+    flex: 1;
+    min-height: 36px;
+  }
+
+  .race-controls--circuit > .pedal--brake {
+    grid-area: 2 / 1;
+    min-height: 56px;
+  }
+
+  .race-controls--circuit > .pedal--gas {
+    grid-area: 2 / 2;
+    min-height: 56px;
+  }
+}
+
+/* Landscape phones: the canvas is height-bound, so lay every control out in one
+ * reachable row along the bottom. */
+@media (orientation: landscape) and (max-height: 520px) {
+  .race-controls--drag,
+  .race-controls--circuit {
+    display: grid;
     grid-template-columns: repeat(4, 1fr);
     grid-template-rows: 1fr;
-    max-width: 640px;
+    gap: 8px;
+    max-width: 620px;
   }
 
-  .race-controls > .pedal--gas {
-    grid-area: 1 / 4;
+  .race-controls--drag > .pedal-stack,
+  .race-controls--circuit > .pedal-stack {
+    display: contents;
   }
 
-  .race-controls > .pedal--brake {
-    grid-area: 1 / 3;
-  }
-
-  .race-controls > .pedal-stack > :nth-child(1) {
+  /* Drag: downshift | upshift | brake | gas. */
+  .race-controls--drag > .pedal-stack > :nth-child(2) {
     grid-area: 1 / 1;
   }
 
-  .race-controls > .pedal-stack > :nth-child(2) {
+  .race-controls--drag > .pedal-stack > :nth-child(1) {
     grid-area: 1 / 2;
   }
 
+  /* Circuit: pause | map | brake | throttle. */
+  .race-controls--circuit > .pedal-stack > :nth-child(1) {
+    grid-area: 1 / 1;
+  }
+
+  .race-controls--circuit > .pedal-stack > :nth-child(2) {
+    grid-area: 1 / 2;
+  }
+
+  .race-controls--drag > .pedal--brake,
+  .race-controls--circuit > .pedal--brake {
+    grid-area: 1 / 3;
+  }
+
+  .race-controls--drag > .pedal--gas,
+  .race-controls--circuit > .pedal--gas {
+    grid-area: 1 / 4;
+  }
+
   .pedal {
-    min-height: 50px;
+    min-height: 46px;
   }
 }
 
@@ -2120,17 +2158,9 @@ button:disabled {
   }
 }
 
-/* Fat-finger controls on real touch devices: hide the (meaningless) keyboard
- * hints so the big action label owns the whole button. */
+/* Real touch devices: hide the (meaningless) keyboard hints so the action label
+ * owns the whole button. Sizing is governed by the layout media above. */
 @media (hover: none) and (pointer: coarse) {
-  .pedal {
-    padding: 16px 10px;
-  }
-
-  .pedal__label {
-    font-size: 15px;
-  }
-
   .pedal__hint {
     display: none;
   }

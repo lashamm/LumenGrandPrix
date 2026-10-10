@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useMemo, useState, type CSSProperties, type ReactNode } from 'react';
 import Phaser from 'phaser';
 import { AI_OPPONENT, type CarDefinition } from '../game/car/carData';
 import { carFromCustomization } from '../game/car/customization';
@@ -213,7 +213,12 @@ export function RaceScreen({
         <div
           className="stage__canvas"
           id="lumen-race-root"
-          style={{ aspectRatio: `${PHASER.width} / ${PHASER.height}` }}
+          style={
+            {
+              aspectRatio: `${PHASER.width} / ${PHASER.height}`,
+              '--stage-ratio': `${PHASER.width / PHASER.height}`,
+            } as CSSProperties
+          }
         />
       </div>
 

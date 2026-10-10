@@ -109,7 +109,7 @@ export function RaceControls({
   }, [phase]);
 
   return (
-    <div className="race-controls" onContextMenu={(event) => event.preventDefault()}>
+    <div className="race-controls race-controls--drag" onContextMenu={(event) => event.preventDefault()}>
       <button
         type="button"
         className={`pedal pedal--gas${pressed.gas ? ' is-pressed' : ''}`}
