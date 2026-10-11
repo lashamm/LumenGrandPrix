@@ -17,6 +17,7 @@ import { CircuitAiDriver } from '../src/game/circuit/circuitAi';
 import { CircuitRaceModel } from '../src/game/circuit/raceModel';
 import {
   CircuitCar,
+  circuitPointAt,
   cornerBudget,
   gripStateFor,
   safeCornerSpeed,
@@ -442,7 +443,16 @@ console.log('\nPhysics — spin and recovery');
   check(intoCorner.maxSlide > 1, 'the slide builds past the spin threshold');
   check(intoCorner.maxLat > CIRCUIT.trackHalfWidthM, 'the car drifts off the racing line');
 
-  const recovered = drive(car, circuit, THROTTLE, 5);
+  // Recover the way a driver would: breathe off the throttle and gather the
+  // car up rather than pinning it, which is what proves the spin resolves.
+  // (Holding full throttle here would just lap round and over-drive the next
+  // corner — a fresh incident, not a failure to recover.)
+  const dt = 1 / 60;
+  for (let i = 0; i < 60 * 5; i += 1) {
+    const point = circuitPointAt(circuit, car.state.s);
+    const safe = safeCornerSpeed(point.curvature, car.stats) * 0.85;
+    car.update(dt, { throttle: car.state.v < safe, brake: car.state.v > safe * 1.15 }, circuit);
+  }
   check(car.state.spinTimer === 0, 'the spin ends');
   check(car.state.v > 0, 'the car keeps moving after a spin');
   check(

@@ -14,7 +14,6 @@ import { CircuitRaceModel } from '../circuit/raceModel';
 import {
   carWorldPosition,
   circuitPointAt,
-  safeCornerSpeed,
   wrapAngle,
 } from '../circuit/vehiclePhysics';
 import {
@@ -95,8 +94,6 @@ const MAX_STEPS = 15;
 
 /** Recompute live standings at most this often. */
 const STANDINGS_INTERVAL_S = 0.25;
-/** Recompute the brake warning at most this often. */
-const WARNING_INTERVAL_S = 0.12;
 
 interface PrevCarState {
   s: number;
@@ -201,7 +198,6 @@ export class CircuitRaceScene extends Phaser.Scene {
   private brkFill!: Phaser.GameObjects.Rectangle;
   private gripFill!: Phaser.GameObjects.Rectangle;
   private bannerText!: Phaser.GameObjects.Text;
-  private warnText!: Phaser.GameObjects.Text;
   private countdownText!: Phaser.GameObjects.Text;
 
   /**
@@ -237,8 +233,6 @@ export class CircuitRaceScene extends Phaser.Scene {
   private standingTotal = 0;
   private standingAt = -10;
   private prevPhase: CircuitPhase = 'countdown';
-  private warnCache = { active: false, severity: 0, category: 'warn' as 'warn' | 'danger' };
-  private warnAt = -10;
   private cachedLapLength = 0;
   private cachedLastBest = { last: '' as string | null, best: '' as string | null };
 
@@ -528,18 +522,13 @@ export class CircuitRaceScene extends Phaser.Scene {
       gripLabel, gripTrack, this.gripFill,
     );
 
-    // Banners and the corner warning.
+    // Race-start banner (the "GO!" flash).
     this.bannerText = this.add
       .text(PHASER.width / 2, 84, '', { fontFamily: FONT, fontSize: '16px', color: cssColour(palette.text) })
       .setOrigin(0.5, 0.5)
       .setScrollFactor(0)
       .setDepth(27);
-    this.warnText = this.add
-      .text(PHASER.width / 2, 148, '', { fontFamily: FONT, fontSize: '13px', color: cssColour(palette.warn) })
-      .setOrigin(0.5, 0.5)
-      .setScrollFactor(0)
-      .setDepth(27);
-    this.hudObjects.push(this.bannerText, this.warnText);
+    this.hudObjects.push(this.bannerText);
   }
 
   private buildCountdown(): void {
@@ -931,44 +920,9 @@ export class CircuitRaceScene extends Phaser.Scene {
           ? palette.warn
           : palette.danger;
 
-    // Context banners.
-    let banner = '';
-    let bannerColour = palette.text;
-    if (state.spinTimer > 0) {
-      banner = 'SPIN!';
-      bannerColour = palette.danger;
-    } else if (state.offTrack) {
-      banner = 'OFF TRACK';
-      bannerColour = palette.warn;
-    } else if (state.lockup > 0.4) {
-      banner = 'LOCK-UP';
-      bannerColour = palette.warn;
-    } else if (state.slide > 0.35) {
-      banner = 'SLIDING';
-      bannerColour = palette.warn;
-    }
-    this.bannerText.setText(banner);
-    this.bannerText.setColor(css(bannerColour));
-    this.bannerText.setAlpha(banner ? 0.75 + 0.25 * Math.sin(this.elapsed * 14) : 0);
-
-    // Braking-point warning: the slowest corner inside the
-    // braking window is reachable slower than the car runs.
-    if (this.elapsed - this.warnAt >= WARNING_INTERVAL_S) {
-      this.warnAt = this.elapsed;
-      const warning = this.cornerWarning();
-      this.warnCache = {
-        active: warning.active,
-        severity: warning.severity,
-        category: warning.severity > 10 ? 'danger' : 'warn',
-      };
-    }
-    if (this.warnCache.active) {
-      this.warnText.setText('▼ BRAKE');
-      this.warnText.setColor(css(this.warnCache.category === 'danger' ? palette.danger : palette.warn));
-      this.warnText.setAlpha(0.6 + 0.4 * Math.sin(this.elapsed * 10));
-    } else {
-      this.warnText.setText('');
-    }
+    // The HUD deliberately gives the player no driving advice: no spin/slide/
+    // lock-up banners and no braking-point warning. The banner text object is
+    // kept only for the race-start "GO!" flash.
 
     // Countdown.
     if (phase === 'countdown') {
@@ -992,25 +946,6 @@ export class CircuitRaceScene extends Phaser.Scene {
       this.countdownStep = -1;
       this.countdownText.setText('');
     }
-  }
-
-  /** Slowest safe speed inside the player's braking window. */
-  private cornerWarning(): { active: boolean; severity: number } {
-    const player = this.model.cars[this.model.playerIndex];
-    const state = player.state;
-    if (state.v < 8 || state.spinTimer > 0) {
-      return { active: false, severity: 0 };
-    }
-    const brakeDecel = (player.stats.brakeForceN * 2.2) / player.stats.massKg;
-    const brakeDistance = (state.v * state.v) / (2 * brakeDecel * 0.85) + 14;
-    let minSafe = Number.POSITIVE_INFINITY;
-    for (let d = 4; d <= brakeDistance + 16; d += 3) {
-      const point = circuitPointAt(this.circuit, state.s + d);
-      const safe = safeCornerSpeed(point.curvature, player.stats);
-      if (safe < minSafe) minSafe = safe;
-    }
-    const severity = state.v - minSafe;
-    return { active: severity > 3, severity };
   }
 
   private flashBanner(message: string, colour: number): void {

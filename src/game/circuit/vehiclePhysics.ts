@@ -54,14 +54,11 @@ const SLIDE_FROM_LOCKUP = 0.8;
 /** Fraction of steering authority a fully-locked wheel set takes away. */
 const LOCKUP_STEER_LOSS = 0.5;
 
-const SLIDE_GAIN = 1.25;
 const SLIDE_ATTACK = 3.5;
 const SLIDE_DECAY = 3.2;
 /** Speed scrub per unit of slide, m/s^2. */
-const SLIDE_SCRUB = 6;
+const SLIDE_SCRUB = 5;
 
-/** Slide intensity that risks a spin. */
-const SPIN_SLIDE = 1.45;
 /** Sustained time over the spin threshold, seconds. */
 const SPIN_TIME = 0.32;
 const SPIN_DURATION = 1.15;
@@ -78,16 +75,49 @@ const WALL_HIT = 5;
 /** Wall impact speed that causes a spin, m/s. */
 const WALL_SPIN_SPEED = 22;
 
-/** Steering servo gain, 1/s. */
-const STEER_RESPONSE = 6;
 /** Centering bias: radians of heading per metre off the line. */
 const CENTER_GAIN = 0.08;
 /** Desperate centering while off-track. */
 const OFFTRACK_CENTER_GAIN = 0.12;
-/** Fraction of the grip budget the servo may use. */
-const YAW_AUTHORITY = 0.96;
 /** Speed floor for the yaw-authority calculation, m/s. */
 const MIN_SPEED_YAW = 4;
+
+/**
+ * Handling tuning — the grip-focused feel lives here.
+ *
+ * Circuit cars are meant to be driven *on* the limit, not sideways. The
+ * tires lean on more lateral grip than the raw table implies, the steering
+ * servo tracks the racing-line curvature directly (feed-forward) instead of
+ * always lagging it, and a slide only builds once the corner is genuinely
+ * over-driven. Exposed so grip, the cornering limit and steering response
+ * can be rebalanced without touching the step function.
+ */
+export const CIRCUIT_HANDLING = {
+  /** Lateral grip multiplier applied on top of the tire table µ. */
+  tireGripScale: 1.4,
+  /**
+   * Share of the racing-line curvature yaw the servo tracks directly
+   * (feed-forward, 0..1). At 1 the car follows a constant-radius corner with
+   * almost no lag; the servo correction below only has to fix line error.
+   */
+  steerFeedforward: 1,
+  /**
+   * Servo heading-error gain, 1/s. Higher is sharper and less progressive;
+   * lower is smoother but lags. Speed sensitivity comes for free because the
+   * commanded yaw is capped by the grip budget, not by this gain.
+   */
+  steerResponse: 9,
+  /**
+   * Yaw the servo may command, as a fraction of the cornering grip budget.
+   * The remainder is reserve the car needs to hold its line; leaving a little
+   * headroom keeps the limit honest without making normal corners twitchy.
+   */
+  yawAuthority: 0.98,
+  /** How strongly exceeding the budget turns into visible slip. */
+  slideGain: 0.9,
+  /** Slide intensity that risks a spin — the true loss-of-control limit. */
+  spinSlide: 1.5,
+} as const;
 
 // ------------------------------------------------------------- derived --
 
@@ -101,7 +131,9 @@ export function circuitStats(levels: UpgradeLevels, bonus = 0): CircuitStats {
     topSpeedMps: Math.max(20, estimateTopSpeedKph(base) / 3.6),
     accelBase: (powerKw * 1000) / (base.massKg * ACCEL_REF_SPEED),
     brakeForceN: base.brakeForceN,
-    tireGrip: base.tireGrip,
+    // Grip scale lives here so `cornerBudget` and `safeCornerSpeed` (the AI's
+    // planner) always agree on how much lateral grip the car really has.
+    tireGrip: base.tireGrip * CIRCUIT_HANDLING.tireGripScale,
     dragArea: base.dragArea * 0.55,
     aeroDownforce: 0.3 + 0.3 * (levels.aero - 1),
     // Brake upgrades add piston area *and* modulation headroom; scaling the
@@ -298,7 +330,10 @@ export class CircuitCar implements CircuitCar {
       (stats.massKg * st.v * st.v * Math.abs(kappa)) / Math.max(budget, 1);
 
     // ------------------------------------------------------- slide --
-    const slideTarget = yawRatio > 1 ? (yawRatio - 1) * SLIDE_GAIN : 0;
+    // A little grip reserve means a car driven at a sane speed never reaches
+    // this branch at all; it only bites when the corner is truly over-driven.
+    const slideTarget =
+      yawRatio > 1 ? (yawRatio - 1) * CIRCUIT_HANDLING.slideGain : 0;
     const rate = slideTarget > st.slide ? SLIDE_ATTACK : SLIDE_DECAY;
     st.slide += (slideTarget - st.slide) * Math.min(1, rate * dt);
     if (st.slide < 0.002) st.slide = 0;
@@ -315,7 +350,7 @@ export class CircuitCar implements CircuitCar {
         st.heading = tangentAngle;
         st.invuln = INVULN_TIME;
       }
-    } else if (st.slide >= SPIN_SLIDE && st.invuln <= 0) {
+    } else if (st.slide >= CIRCUIT_HANDLING.spinSlide && st.invuln <= 0) {
       st.spinAccum += dt;
       if (st.spinAccum >= SPIN_TIME) {
         st.spinAccum = 0;
@@ -397,8 +432,21 @@ export class CircuitCar implements CircuitCar {
     // authority, so braking too hard mid-corner makes the car run wide
     // instead of bending into the turn.
     const maxYaw =
-      availableYaw * YAW_AUTHORITY * (1 - st.lockup * LOCKUP_STEER_LOSS);
-    const yaw = clamp(steerError * STEER_RESPONSE, -maxYaw, maxYaw);
+      availableYaw *
+      CIRCUIT_HANDLING.yawAuthority *
+      (1 - st.lockup * LOCKUP_STEER_LOSS);
+    // Feed-forward the corner's own curvature — the yaw rate a car on the
+    // racing line must carry to follow it — then add a proportional
+    // correction for any line error. This is what makes the car flow through
+    // corners instead of always lagging the tangent and running wide; the
+    // grip clamp below still caps the total, so over-driving the corner
+    // understeers exactly as it should.
+    const feedForward = st.v * kappa * CIRCUIT_HANDLING.steerFeedforward;
+    const yaw = clamp(
+      feedForward + steerError * CIRCUIT_HANDLING.steerResponse,
+      -maxYaw,
+      maxYaw,
+    );
     if (st.spinTimer <= 0) {
       st.heading += yaw * dt;
     }
