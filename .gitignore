@@ -1,7 +1,87 @@
-node_modules
-dist
-dist-ssr
-*.local
-.DS_Store
-.vite
+# ---------------------------------------------------------------------------
+# Dependencies
+# ---------------------------------------------------------------------------
+node_modules/
+.pnp
+.pnp.js
+.yarn/
+.yarn/cache
+.yarn/install-state.gz
+
+# ---------------------------------------------------------------------------
+# Build output
+# ---------------------------------------------------------------------------
+dist/
+dist-ssr/
+build/
+out/
+.vite/
+coverage/
 *.tsbuildinfo
+
+# ---------------------------------------------------------------------------
+# Local environment files and secrets
+#
+# `.env.example` is the only env file that belongs in the repository; every
+# other variant stays local. Nothing prefixed `VITE_` is secret: Vite inlines
+# those values into the public browser bundle.
+# ---------------------------------------------------------------------------
+.env
+.env.*
+!.env.example
+*.local
+
+# Keys, certificates and wallet material. Never commit these.
+*.pem
+*.key
+*.crt
+*.cer
+*.p12
+*.pfx
+*.p8
+*.jks
+*.keystore
+id.json
+keypair*.json
+*-keypair.json
+wallet*.json
+*.seed
+*.mnemonic
+secrets.json
+serviceAccount*.json
+
+# Deployment credentials / provider state
+.vercel
+.netlify
+.firebase
+*.tfstate
+*.tfstate.*
+
+# ---------------------------------------------------------------------------
+# Logs and temporary files
+# ---------------------------------------------------------------------------
+*.log
+logs/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+*.tmp
+*.temp
+tmp/
+temp/
+.cache/
+
+# ---------------------------------------------------------------------------
+# Editors and operating system
+# ---------------------------------------------------------------------------
+.vscode/*
+!.vscode/extensions.json
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+desktop.ini
